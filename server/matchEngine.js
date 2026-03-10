@@ -273,8 +273,8 @@ function refreshTeamMetrics(team, matchContext) {
 
 function fatigueLoss(player) {
   const staminaResistance = clamp((player.stamina - 40) / 110, 0, 0.4);
-  const base = player.position === "G" ? 0.04 : 0.12;
-  return clamp(base - staminaResistance * 0.08, 0.02, 0.14);
+  const base = player.position === "G" ? 0.05 : 0.18;
+  return clamp(base - staminaResistance * 0.09, 0.03, 0.2);
 }
 
 function applyFatigue(team) {
@@ -409,8 +409,8 @@ function maybeAiSubstitution(state, side) {
     }
 
     const shouldChange =
-      candidate.player.fitness < 72 ||
-      replacement.overall > candidate.player.overall + 3 ||
+      candidate.player.fitness < 82 ||
+      replacement.overall >= candidate.player.overall ||
       (scoreDiff < 0 && replacement.attack > candidate.player.attack + 4) ||
       (scoreDiff > 0 && replacement.defense > candidate.player.defense + 4);
 

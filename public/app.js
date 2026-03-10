@@ -1516,6 +1516,16 @@ function moveToPool(playerId) {
   persistSquadDraft();
 }
 
+function swapLineupSlots(firstIndex, secondIndex) {
+  if (!Number.isInteger(firstIndex) || !Number.isInteger(secondIndex) || firstIndex === secondIndex) {
+    return;
+  }
+  const first = ui.lineupDraft[firstIndex];
+  const second = ui.lineupDraft[secondIndex];
+  ui.lineupDraft[firstIndex] = second;
+  ui.lineupDraft[secondIndex] = first;
+  persistSquadDraft();
+}
 let squadSaveTimer = null;
 
 function persistSquadDraft(immediate = false) {
@@ -1578,11 +1588,21 @@ function bestSlotForPlayer(playerId, forceSelected = false) {
 function attachSquadSelectionEvents() {
   document.querySelectorAll("[data-slot-index]").forEach((slot) => {
     slot.addEventListener("click", () => {
-      ui.selectedLineupSlot = Number(slot.dataset.slotIndex);
+      const clicked = Number(slot.dataset.slotIndex);
+      if (!Number.isInteger(clicked)) {
+        return;
+      }
+      if (Number.isInteger(ui.selectedLineupSlot) && ui.selectedLineupSlot !== clicked) {
+        swapLineupSlots(ui.selectedLineupSlot, clicked);
+        ui.selectedLineupSlot = null;
+      } else if (ui.selectedLineupSlot === clicked) {
+        ui.selectedLineupSlot = null;
+      } else {
+        ui.selectedLineupSlot = clicked;
+      }
       render();
     });
   });
-
   document.querySelectorAll("[data-slot-pick]").forEach((button) => {
     button.addEventListener("click", () => {
       ui.selectedLineupSlot = Number(button.dataset.slotPick);
@@ -2019,6 +2039,8 @@ refreshButton.textContent = t("refresh");
 loadState().catch((error) => {
   app.innerHTML = `<section class="loading-card"><p>${error.message}</p></section>`;
 });
+
+
 
 
 

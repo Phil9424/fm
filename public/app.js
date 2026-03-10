@@ -111,6 +111,7 @@ const I18N = {
     domesticCups: "Внутренние кубки",
     result: "Результат",
     fastFinished: "Матч досчитан",
+    matchEvents: "События матча",
   },
   en: {
     refresh: "Refresh",
@@ -219,6 +220,7 @@ const I18N = {
     domesticCups: "Domestic cups",
     result: "Result",
     fastFinished: "Match fast-forwarded",
+    matchEvents: "Match events",
   },
 };
 
@@ -1212,6 +1214,57 @@ function renderTalkOptions(stage, options) {
   `;
 }
 
+function renderMatchEventFeed(events) {
+  const list = (events || []).filter((event) => ["goal", "yellow", "red", "injury"].includes(event.type));
+  if (!list.length) {
+    return `<p class="secondary">${t("noData")}</p>`;
+  }
+
+  return list.map((event) => {
+    let badge = "•";
+    let headline = safeText(event.playerName, "-");
+    let detail = "";
+    let className = "match-event";
+
+    if (event.type === "goal") {
+      badge = "⚽";
+      headline = ui.language === "ru" ? "ГОООООООЛ" : "GOOOAAAL";
+      detail = `${safeText(event.playerName, "-")}${event.assistName ? ` • ${ui.language === "ru" ? "пас" : "assist"}: ${event.assistName}` : ""}`;
+      className += " goal";
+    } else if (event.type === "yellow") {
+      badge = "🟨";
+      headline = event.dismissal
+        ? (ui.language === "ru" ? "Вторая желтая" : "Second yellow")
+        : (ui.language === "ru" ? "Желтая карточка" : "Yellow card");
+      detail = safeText(event.playerName, "-");
+      className += " yellow";
+    } else if (event.type === "red") {
+      badge = "🟥";
+      headline = event.reason === "secondYellow"
+        ? (ui.language === "ru" ? "Удаление после второй желтой" : "Sent off after second yellow")
+        : (ui.language === "ru" ? "Прямая красная" : "Straight red");
+      detail = safeText(event.playerName, "-");
+      className += " red";
+    } else if (event.type === "injury") {
+      badge = "🤕";
+      headline = ui.language === "ru" ? "Травма" : "Injury";
+      detail = `${safeText(event.playerName, "-")}${event.injuryGames ? ` • ${ui.language === "ru" ? `вне игры ${event.injuryGames} матч.` : `out for ${event.injuryGames} match(es)`}` : ""}`;
+      className += " injury";
+    }
+
+    return `
+      <div class="${className}">
+        <div class="match-event-badge">${badge}</div>
+        <div class="match-event-body">
+          <strong>${headline}</strong>
+          <div>${detail}</div>
+        </div>
+        <div class="match-event-minute">${event.minute}'</div>
+      </div>
+    `;
+  }).join("");
+}
+
 function matchView() {
   const { liveMatch, nextFixture } = ui.state;
   if (!liveMatch) {
@@ -1272,6 +1325,7 @@ function matchView() {
   const humanSide = liveMatch.matchContext.humanSide;
   const yourTeam = liveMatch[humanSide];
   const opponent = liveMatch[humanSide === "home" ? "away" : "home"];
+  const availableSubOut = yourTeam.starters.filter((player) => !player.sentOff);
 
   if (liveMatch.status === "pregame") {
     return `
@@ -1311,7 +1365,6 @@ function matchView() {
   }
 
   if (liveMatch.status === "finished") {
-    const goals = (liveMatch.events || []).filter((event) => event.type === "goal");
     return     `
       <section class="card">
         <p class="eyebrow">${ui.language === "ru" ? "Матч завершен" : "Match finished"}</p>
@@ -1328,9 +1381,9 @@ function matchView() {
       </section>
 
       <section class="card">
-        <p class="eyebrow">${ui.language === "ru" ? "Голы" : "Goals"}</p>
+        <p class="eyebrow">${t("matchEvents")}</p>
         <div class="grid">
-          ${goals.length ? goals.map((goal) =>             `<div class="split"><span>${goal.playerName}${goal.assistName ? ` (${ui.language === "ru" ? "пас" : "assist"}: ${goal.assistName})` : ""}</span><strong>${goal.minute}'</strong></div>`          ).join("") : `<p class="secondary">${t("noData")}</p>`}
+          ${renderMatchEventFeed(liveMatch.events || [])}
         </div>
         <div class="action-row">
           <button id="continueAfterMatchButton" class="primary-button">${ui.language === "ru" ? "Далее" : "Continue"}</button>
@@ -1384,6 +1437,12 @@ function matchView() {
       <div class="commentary">
         ${liveMatch.commentary.slice().reverse().map((line) => `<div class="commentary-line"><strong>${line.minute}'</strong> ${line.text}</div>`).join("")}
       </div>
+      <div class="card compact-card">
+        <p class="eyebrow">${t("matchEvents")}</p>
+        <div class="grid">
+          ${renderMatchEventFeed(liveMatch.events || [])}
+        </div>
+      </div>
       <div class="grid two">
         <div class="field">
           <label>${t("formation")}</label>
@@ -1405,7 +1464,7 @@ function matchView() {
       <div class="grid two">
         <div class="field">
           <label>${t("playerOut")}</label>
-          <select id="subOutSelect">${yourTeam.starters.map((player) => `<option value="${player.id}">${player.name}</option>`).join("")}</select>
+          <select id="subOutSelect">${availableSubOut.map((player) => `<option value="${player.id}">${player.name}</option>`).join("")}</select>
         </div>
         <div class="field">
           <label>${t("playerIn")}</label>
@@ -1413,7 +1472,7 @@ function matchView() {
         </div>
       </div>
       <div class="action-row">
-        <button id="makeSubButton" class="primary-button">${t("makeSubstitution")}</button>
+        <button id="makeSubButton" class="primary-button" ${!availableSubOut.length || !yourTeam.bench.length ? "disabled" : ""}>${t("makeSubstitution")}</button>
       </div>
     </section>
   `;

@@ -336,6 +336,8 @@ function createSchema() {
   ensureColumn("fixtures", "attendance_estimate", "INTEGER DEFAULT 0");
   ensureColumn("fixtures", "winner_club_id", "INTEGER");
   ensureColumn("fixtures", "result_note", "TEXT");
+  ensureColumn("players", "injury_games", "INTEGER DEFAULT 0");
+  ensureColumn("players", "discipline_json", "TEXT DEFAULT '{}'");
   ensureColumn("manager", "language", "TEXT DEFAULT 'en'");
 }
 
@@ -1029,13 +1031,126 @@ function readTactics(clubId) {
   return db.prepare("SELECT * FROM club_tactics WHERE club_id = ?").get(clubId);
 }
 
-function resolveLineup(clubId) {
+function normalizeCompetitionType(competitionType) {
+  return ["league", "cup", "champions", "uefa"].includes(competitionType) ? competitionType : "league";
+}
+
+function createDisciplineState() {
+  return {
+    league: { yellow: 0, suspension: 0 },
+    cup: { yellow: 0, suspension: 0 },
+    champions: { yellow: 0, suspension: 0 },
+    uefa: { yellow: 0, suspension: 0 },
+  };
+}
+
+function readDisciplineState(player) {
+  const fallback = createDisciplineState();
+  const raw = player?.discipline_json;
+  if (!raw) {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      league: { ...fallback.league, ...(parsed.league || {}) },
+      cup: { ...fallback.cup, ...(parsed.cup || {}) },
+      champions: { ...fallback.champions, ...(parsed.champions || {}) },
+      uefa: { ...fallback.uefa, ...(parsed.uefa || {}) },
+    };
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function writePlayerAvailability(playerId, injuryGames, disciplineState) {
+  db.prepare(`
+    UPDATE players
+    SET injury_games = ?, discipline_json = ?
+    WHERE id = ?
+  `).run(Math.max(0, Math.round(injuryGames || 0)), JSON.stringify(disciplineState || createDisciplineState()), playerId);
+}
+
+function isUnavailableForCompetition(player, competitionType) {
+  if (!competitionType) {
+    return false;
+  }
+  const discipline = readDisciplineState(player);
+  const key = normalizeCompetitionType(competitionType);
+  return Number(player.injury_games || 0) > 0 || Number(discipline[key]?.suspension || 0) > 0;
+}
+
+function filterEligiblePlayers(players, competitionType) {
+  if (!competitionType) {
+    return players;
+  }
+  return players.filter((player) => !isUnavailableForCompetition(player, competitionType));
+}
+
+function recalculatePlayerEconomics(playerLike) {
+  const player = playerLike || {};
+  const baseOverall = Number(player.overall || 0);
+  const weightedOverall =
+    player.position === "G"
+      ? Number(player.goalkeeping || 0) * 0.54 + Number(player.defense || 0) * 0.12 + baseOverall * 0.34
+      : Number(player.attack || 0) * 0.28 + Number(player.defense || 0) * 0.18 + Number(player.passing || 0) * 0.24 + Number(player.stamina || 0) * 0.12 + baseOverall * 0.22;
+  const rating = clamp(weightedOverall, 35, 96);
+  return {
+    wage: Math.round(rating * rating * 35),
+    value: Math.round(rating * rating * rating * 90),
+  };
+}
+
+function serveAvailabilityForFixture(fixture) {
+  const competitionType = normalizeCompetitionType(fixture.competition_type);
+  const updatePlayer = db.prepare(`
+    UPDATE players
+    SET injury_games = ?, discipline_json = ?
+    WHERE id = ?
+  `);
+
+  [fixture.home_club_id, fixture.away_club_id].forEach((clubId) => {
+    const players = db.prepare("SELECT id, injury_games, discipline_json FROM players WHERE club_id = ?").all(clubId);
+    players.forEach((player) => {
+      const discipline = readDisciplineState(player);
+      let changed = false;
+      let injuryGames = Number(player.injury_games || 0);
+
+      if (injuryGames > 0) {
+        injuryGames -= 1;
+        changed = true;
+      }
+
+      if (discipline[competitionType].suspension > 0) {
+        discipline[competitionType].suspension -= 1;
+        changed = true;
+      }
+
+      if (changed) {
+        updatePlayer.run(injuryGames, JSON.stringify(discipline), player.id);
+      }
+    });
+  });
+}
+
+function resolveLineup(clubId, competitionType = null) {
   const tactics = readTactics(clubId);
   const players = db.prepare("SELECT * FROM players WHERE club_id = ? ORDER BY overall DESC, age ASC").all(clubId);
-  const playerMap = new Map(players.map((player) => [player.id, player]));
+  const eligiblePlayers = filterEligiblePlayers(players, competitionType);
+  const playerMap = new Map(eligiblePlayers.map((player) => [player.id, player]));
 
   if (!tactics) {
-    const auto = pickBestLineup(players, "4-4-2");
+    if (competitionType && eligiblePlayers.length < 11) {
+      return {
+        formation: "4-4-2",
+        mentality: "balanced",
+        style: "possession",
+        starters: eligiblePlayers.slice(0, 11),
+        bench: [],
+        reserves: [],
+      };
+    }
+    const auto = pickBestLineup(eligiblePlayers, "4-4-2");
     return {
       formation: "4-4-2",
       mentality: "balanced",
@@ -1051,10 +1166,21 @@ function resolveLineup(clubId) {
   const starters = lineupIds.map((id) => playerMap.get(id)).filter(Boolean);
   const bench = benchIds.map((id) => playerMap.get(id)).filter(Boolean);
   const usedIds = new Set([...starters, ...bench].map((player) => player.id));
-  const extras = players.filter((player) => !usedIds.has(player.id));
+  const extras = eligiblePlayers.filter((player) => !usedIds.has(player.id));
 
-  if (starters.length !== 11) {
-    const auto = pickBestLineup(players, tactics.formation);
+  if (starters.length !== 11 && competitionType && eligiblePlayers.length < 11) {
+    return {
+      formation: tactics.formation,
+      mentality: tactics.mentality,
+      style: tactics.style,
+      starters: eligiblePlayers.slice(0, 11),
+      bench: [],
+      reserves: [],
+    };
+  }
+
+  if (starters.length !== 11 && eligiblePlayers.length >= 11) {
+    const auto = pickBestLineup(eligiblePlayers, tactics.formation);
     db.prepare(`
       UPDATE club_tactics
       SET lineup_json = ?, bench_json = ?
@@ -1080,9 +1206,20 @@ function resolveLineup(clubId) {
   };
 }
 
-function resolveAiLineup(clubId) {
+function resolveAiLineup(clubId, competitionType = null) {
   const players = db.prepare("SELECT * FROM players WHERE club_id = ? ORDER BY overall DESC, age ASC").all(clubId);
-  return pickAiSetup(players);
+  const eligiblePlayers = filterEligiblePlayers(players, competitionType);
+  if (competitionType && eligiblePlayers.length < 11) {
+    return {
+      formation: "4-4-2",
+      mentality: "balanced",
+      style: "possession",
+      starters: eligiblePlayers.slice(0, 11),
+      bench: [],
+      reserves: [],
+    };
+  }
+  return pickAiSetup(eligiblePlayers);
 }
 
 function getClubSnapshot(clubId) {
@@ -1817,13 +1954,13 @@ function buildState() {
         matchDate: nextFixture.match_date || nextFixture.matchDate,
         weather: nextFixture.weather_json ? JSON.parse(nextFixture.weather_json) : null,
         resultNote: nextFixture.result_note || nextFixture.resultNote || null,
-        homeLineup: buildMatchTeam(nextFixture.home_club_id, { humanControlled: nextFixture.home_club_id === club.id }).starters.map((player) => ({
+        homeLineup: buildMatchTeam(nextFixture.home_club_id, { humanControlled: nextFixture.home_club_id === club.id, competitionType: nextFixture.competition_type }).starters.map((player) => ({
           id: player.id,
           name: player.name,
           position: player.position,
           overall: player.overall,
         })),
-        awayLineup: buildMatchTeam(nextFixture.away_club_id, { humanControlled: nextFixture.away_club_id === club.id }).starters.map((player) => ({
+        awayLineup: buildMatchTeam(nextFixture.away_club_id, { humanControlled: nextFixture.away_club_id === club.id, competitionType: nextFixture.competition_type }).starters.map((player) => ({
           id: player.id,
           name: player.name,
           position: player.position,
@@ -2033,7 +2170,9 @@ function sendTrainingCamp(campId) {
         defense = ?,
         passing = ?,
         stamina = ?,
-        goalkeeping = ?
+        goalkeeping = ?,
+        value = ?,
+        wage = ?
     WHERE id = ?
   `);
 
@@ -2052,13 +2191,25 @@ function sendTrainingCamp(campId) {
         ? goalkeeping * 0.55 + defense * 0.15 + passing * 0.1 + stamina * 0.05 + 25
         : attack * 0.24 + defense * 0.24 + passing * 0.22 + stamina * 0.14 + 22;
 
+    const nextPlayer = {
+      ...player,
+      overall: Math.round(clamp(overall, 46, 94)),
+      attack: Math.round(clamp(attack, 12, 95)),
+      defense: Math.round(clamp(defense, 12, 95)),
+      passing: Math.round(clamp(passing, 12, 95)),
+      stamina: Math.round(clamp(stamina, 20, 95)),
+      goalkeeping: Math.round(clamp(goalkeeping, 10, 96)),
+    };
+    const economics = recalculatePlayerEconomics(nextPlayer);
     updatePlayer.run(
-      Math.round(clamp(overall, 46, 94)),
-      Math.round(clamp(attack, 12, 95)),
-      Math.round(clamp(defense, 12, 95)),
-      Math.round(clamp(passing, 12, 95)),
-      Math.round(clamp(stamina, 20, 95)),
-      Math.round(clamp(goalkeeping, 10, 96)),
+      nextPlayer.overall,
+      nextPlayer.attack,
+      nextPlayer.defense,
+      nextPlayer.passing,
+      nextPlayer.stamina,
+      nextPlayer.goalkeeping,
+      economics.value,
+      economics.wage,
       player.id
     );
   });
@@ -2085,7 +2236,12 @@ function sellPlayer(playerId, askingPrice) {
 
 function buildMatchTeam(clubId, options = {}) {
   const club = db.prepare("SELECT * FROM clubs WHERE id = ?").get(clubId);
-  const lineup = options.humanControlled ? resolveLineup(clubId) : resolveAiLineup(clubId);
+  const lineup = options.humanControlled
+    ? resolveLineup(clubId, options.competitionType || null)
+    : resolveAiLineup(clubId, options.competitionType || null);
+  if (lineup.starters.length < 11) {
+    throw new Error(localize("Недостаточно доступных игроков для старта матча.", "Not enough eligible players to start the match."));
+  }
   return {
     clubId,
     clubName: club.name,
@@ -2132,8 +2288,8 @@ function resolveKnockoutWinner(fixture, state) {
     };
   }
 
-  const home = buildMatchTeam(fixture.home_club_id);
-  const away = buildMatchTeam(fixture.away_club_id);
+  const home = buildMatchTeam(fixture.home_club_id, { competitionType: fixture.competition_type });
+  const away = buildMatchTeam(fixture.away_club_id, { competitionType: fixture.competition_type });
   const homeStrength = home.starters.reduce((sum, player) => sum + player.overall + player.goalkeeping * 0.35, 0);
   const awayStrength = away.starters.reduce((sum, player) => sum + player.overall + player.goalkeeping * 0.35, 0);
   const winnerClubId = Math.random() < homeStrength / (homeStrength + awayStrength) ? fixture.home_club_id : fixture.away_club_id;
@@ -2144,6 +2300,96 @@ function resolveKnockoutWinner(fixture, state) {
       : localize("Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В Р вЂ№Р В Р Р‹Р РЋРЎСџР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В±Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р Р‹Р РЋРІР‚С”Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В° Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†Р вЂљРЎвЂќР В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎС™Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С” Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎС™Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В»Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В.", "Away side win on penalties."),
   };
 }
+function applyDisciplineAndInjuries(fixture, state, playerEvents) {
+  const competitionType = normalizeCompetitionType(fixture.competition_type);
+  const participants = new Map();
+
+  for (const side of ["home", "away"]) {
+    const team = state[side];
+    team.starters.forEach((player) => {
+      participants.set(player.id, player);
+    });
+    state.substitutions
+      .filter((entry) => entry.side === side)
+      .forEach((entry) => {
+        const playerIn = team.bench.find((player) => player.id === entry.playerInId);
+        if (playerIn) {
+          participants.set(playerIn.id, playerIn);
+        }
+      });
+  }
+
+  Object.keys(playerEvents).forEach((playerId) => {
+    const numericId = Number(playerId);
+    if (!participants.has(numericId)) {
+      const player = db.prepare("SELECT * FROM players WHERE id = ?").get(numericId);
+      if (player) {
+        participants.set(numericId, player);
+      }
+    }
+  });
+
+  const updateAvailability = db.prepare(`
+    UPDATE players
+    SET injury_games = ?, discipline_json = ?
+    WHERE id = ?
+  `);
+
+  participants.forEach((player, playerId) => {
+    const eventSummary = playerEvents[playerId] || { yellow: 0, yellowAccumulation: 0, red: 0 };
+    const discipline = readDisciplineState(player);
+    const competitionState = discipline[competitionType];
+
+    if (eventSummary.yellowAccumulation > 0) {
+      competitionState.yellow += eventSummary.yellowAccumulation;
+      if (competitionState.yellow >= 4) {
+        competitionState.yellow = 0;
+        competitionState.suspension += 1;
+      }
+    }
+
+    if (eventSummary.red > 0) {
+      competitionState.suspension += eventSummary.red;
+    }
+
+    let injuryGames = Number(player.injury_games || 0);
+    if (player.injuryGamesAwarded) {
+      injuryGames = Math.max(injuryGames, player.injuryGamesAwarded);
+    }
+
+    updateAvailability.run(injuryGames, JSON.stringify(discipline), playerId);
+  });
+
+  for (const side of ["home", "away"]) {
+    const team = state[side];
+    const injuryCandidates = team.starters
+      .filter((player) => !player.sentOff)
+      .sort((a, b) => (a.fitness || 90) - (b.fitness || 90));
+
+    if (!injuryCandidates.length || Math.random() > 0.18) {
+      continue;
+    }
+
+    const injured = injuryCandidates[0];
+    const injuryGames = 1 + Math.floor(Math.random() * 3);
+    injured.injuryGamesAwarded = injuryGames;
+    state.events.push({
+      minute: 90,
+      type: "injury",
+      side,
+      playerId: injured.id,
+      playerName: injured.name,
+      injuryGames,
+    });
+    const storedPlayer = db.prepare("SELECT injury_games, discipline_json FROM players WHERE id = ?").get(injured.id);
+    updateAvailability.run(
+      Math.max(Number(storedPlayer?.injury_games || 0), injuryGames),
+      JSON.stringify(readDisciplineState(storedPlayer)),
+      injured.id
+    );
+  }
+}
+
 function applyMatchOutcome(fixture, state) {
   const knockout = resolveKnockoutWinner(fixture, state);
   state.winnerClubId = knockout.winnerClubId;
@@ -2163,27 +2409,34 @@ function applyMatchOutcome(fixture, state) {
     fixture.id
   );
 
+  serveAvailabilityForFixture(fixture);
+
   const playerEvents = {};
   for (const event of state.events) {
     if (!playerEvents[event.playerId]) {
-      playerEvents[event.playerId] = { goals: 0, assists: 0, yellow: 0, red: 0 };
+      playerEvents[event.playerId] = { goals: 0, assists: 0, yellow: 0, yellowAccumulation: 0, red: 0 };
     }
     if (event.type === "goal") {
       playerEvents[event.playerId].goals += 1;
       if (event.assistId) {
         if (!playerEvents[event.assistId]) {
-          playerEvents[event.assistId] = { goals: 0, assists: 0, yellow: 0, red: 0 };
+          playerEvents[event.assistId] = { goals: 0, assists: 0, yellow: 0, yellowAccumulation: 0, red: 0 };
         }
         playerEvents[event.assistId].assists += 1;
       }
     }
     if (event.type === "yellow") {
       playerEvents[event.playerId].yellow += 1;
+      if (event.countsForAccumulation !== false) {
+        playerEvents[event.playerId].yellowAccumulation += 1;
+      }
     }
     if (event.type === "red") {
       playerEvents[event.playerId].red += 1;
     }
   }
+
+  applyDisciplineAndInjuries(fixture, state, playerEvents);
 
   const updateStarter = db.prepare(`
     UPDATE players
@@ -2195,7 +2448,9 @@ function applyMatchOutcome(fixture, state) {
         starts = starts + 1,
         minutes = minutes + ?,
         morale = ?,
-        fitness = ?
+        fitness = ?,
+        value = ?,
+        wage = ?
     WHERE id = ?
   `);
 
@@ -2222,7 +2477,8 @@ function applyMatchOutcome(fixture, state) {
     const moraleDelta = sideWon ? 5 : sideLost ? -4 : 1;
 
     team.starters.forEach((player) => {
-      const events = playerEvents[player.id] || { goals: 0, assists: 0, yellow: 0, red: 0 };
+      const events = playerEvents[player.id] || { goals: 0, assists: 0, yellow: 0, yellowAccumulation: 0, red: 0 };
+      const economics = recalculatePlayerEconomics(player);
       updateStarter.run(
         events.goals,
         events.assists,
@@ -2231,6 +2487,8 @@ function applyMatchOutcome(fixture, state) {
         90,
         clamp((player.morale || 70) + moraleDelta, 45, 96),
         clamp((player.fitness || 90) - 7, 55, 95),
+        economics.value,
+        economics.wage,
         player.id
       );
     });
@@ -2258,8 +2516,8 @@ function simulateOtherFixturesForRound(roundNo, currentFixtureId) {
   pendingFixtures.forEach((fixture) => {
     const state = simulateInstantMatch(
       fixture,
-      buildMatchTeam(fixture.home_club_id),
-      buildMatchTeam(fixture.away_club_id)
+      buildMatchTeam(fixture.home_club_id, { competitionType: fixture.competition_type }),
+      buildMatchTeam(fixture.away_club_id, { competitionType: fixture.competition_type })
     );
     applyMatchOutcome(fixture, state);
   });
@@ -2584,8 +2842,8 @@ function startLiveMatch() {
   const homeClub = db.prepare("SELECT * FROM clubs WHERE id = ?").get(fixture.home_club_id);
   const awayClub = db.prepare("SELECT * FROM clubs WHERE id = ?").get(fixture.away_club_id);
   const leagueTable = computeLeagueTable(homeClub.league_id);
-  const home = buildMatchTeam(fixture.home_club_id, { humanControlled: fixture.home_club_id === manager.club_id });
-  const away = buildMatchTeam(fixture.away_club_id, { humanControlled: fixture.away_club_id === manager.club_id });
+  const home = buildMatchTeam(fixture.home_club_id, { humanControlled: fixture.home_club_id === manager.club_id, competitionType: fixture.competition_type });
+  const away = buildMatchTeam(fixture.away_club_id, { humanControlled: fixture.away_club_id === manager.club_id, competitionType: fixture.competition_type });
   const weather = fixture.weather_json ? JSON.parse(fixture.weather_json) : generateWeather();
   const attendanceEstimate = estimateLiveAttendance(fixture, homeClub, awayClub, manager.club_id, leagueTable);
   const humanSide = fixture.home_club_id === manager.club_id ? "home" : "away";
@@ -2694,12 +2952,15 @@ function fastForwardLiveMatch() {
 }
 
 function continueAfterMatch() {
-  const row = db.prepare("SELECT * FROM live_match WHERE id = 1 AND is_active = 1").get();
+  const row = db.prepare("SELECT * FROM live_match WHERE id = 1").get();
   if (!row) {
-    throw new Error("No finished match to continue from.");
+    return;
   }
 
   const state = JSON.parse(row.state_json);
+  if (state.status !== "finished") {
+    return;
+  }
   if (state.status !== "finished") {
     throw new Error(localize("Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“ Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’Вµ Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’Вµ Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В·Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В»Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В Р РЏ.", "The match is not finished yet."));
   }

@@ -106,7 +106,18 @@ function normalizePlayer(player) {
     passing: Number(player.passing ?? 40) || 40,
     stamina: Number(player.stamina ?? 45) || 45,
     goalkeeping: Number(player.goalkeeping ?? 12) || 12,
+    matchYellowCards: Number(player.matchYellowCards ?? 0) || 0,
+    sentOff: Boolean(player.sentOff),
   };
+}
+
+function activeStarters(team) {
+  const starters = (team.starters || []).map((player) => {
+    Object.assign(player, normalizePlayer(player));
+    return player;
+  });
+  const active = starters.filter((player) => !player.sentOff);
+  return active.length ? active : starters;
 }
 
 function getFormationSlots(formation) {
@@ -149,7 +160,18 @@ function getFormationShapeBonus(formation) {
 }
 
 function calculateTeamMetrics(team, matchContext = {}) {
-  const starters = team.starters.map(normalizePlayer);
+  const starters = activeStarters(team);
+  if (!starters.length) {
+    return {
+      attack: 35,
+      defense: 35,
+      passing: 35,
+      stamina: 55,
+      transition: 35,
+      goalkeeping: 30,
+      discipline: 55,
+    };
+  }
   const mentality = MENTALITY_MODIFIERS[team.mentality] || MENTALITY_MODIFIERS.balanced;
   const style = STYLE_MODIFIERS[team.style] || STYLE_MODIFIERS.possession;
   const formationBonus = getFormationShapeBonus(team.formation);
@@ -285,7 +307,6 @@ function applyFatigue(team) {
 }
 
 function maybeCardEvent(state, side) {
-  const language = getLanguage(state);
   const team = state[side];
   const opponentSide = side === "home" ? "away" : "home";
   const cardRoll = Math.random();
@@ -294,28 +315,64 @@ function maybeCardEvent(state, side) {
     return;
   }
 
-  const outfieldPlayers = team.starters.filter((player) => player.position !== "G");
+  const outfieldPlayers = activeStarters(team).filter((player) => player.position !== "G");
   if (!outfieldPlayers.length) {
     return;
   }
 
   const offender = chooseWeighted(outfieldPlayers, "defense");
   const isRed = cardRoll < 0.0045;
-  state.stats[side][isRed ? "red" : "yellow"] += 1;
+  if (!isRed) {
+    offender.matchYellowCards = Number(offender.matchYellowCards || 0) + 1;
+    state.stats[side].yellow += 1;
+    state.events.push({
+      minute: state.minute,
+      type: "yellow",
+      side,
+      playerId: offender.id,
+      playerName: offender.name,
+      dismissal: offender.matchYellowCards >= 2,
+      countsForAccumulation: offender.matchYellowCards < 2,
+    });
+    addCommentary(
+      state,
+      offender.matchYellowCards >= 2
+        ? `${offender.name} получает вторую желтую и удаляется у ${team.clubName}.`
+        : `${offender.name} получает желтую карточку за ${team.clubName}.`,
+      offender.matchYellowCards >= 2
+        ? `${offender.name} picks up a second yellow and is sent off for ${team.clubName}.`
+        : `${offender.name} receives a yellow card for ${team.clubName}.`
+    );
+    if (offender.matchYellowCards < 2) {
+      return;
+    }
+  }
+  offender.sentOff = true;
+  state.stats[side].red += 1;
   state.events.push({
     minute: state.minute,
-    type: isRed ? "red" : "yellow",
+    type: "red",
     side,
     playerId: offender.id,
     playerName: offender.name,
+    reason: isRed ? "straight" : "secondYellow",
   });
   addCommentary(
+    state,
+    isRed
+      ? `${offender.name} получает прямую красную за ${team.clubName}.`
+      : `${team.clubName} остается вдесятером после удаления ${offender.name}.`,
+    isRed
+      ? `${offender.name} receives a straight red card for ${team.clubName}.`
+      : `${team.clubName} are down to ten after ${offender.name}'s dismissal.`
+  );
+  if (false) addCommentary(
     state,
     `${offender.name} получает ${isRed ? "красную" : "желтую"} карточку за ${team.clubName}.`,
     `${offender.name} receives a ${isRed ? "red" : "yellow"} card for ${team.clubName}.`
   );
 
-  if (isRed) {
+  if (true) {
     offender.defense = Math.max(18, offender.defense - 12);
     offender.attack = Math.max(12, offender.attack - 7);
     refreshTeamMetrics(team, state.matchContext);
@@ -338,7 +395,14 @@ function performSubstitution(state, side, playerOutId, playerInId, automatic = f
 
   const [playerOut] = team.starters.splice(starterIndex, 1);
   const [playerIn] = team.bench.splice(benchIndex, 1);
+  if (playerOut.sentOff) {
+    team.starters.splice(starterIndex, 0, playerOut);
+    team.bench.splice(benchIndex, 0, playerIn);
+    return false;
+  }
   playerIn.fitness = clamp(playerIn.fitness + 4, 60, 99);
+  playerIn.matchYellowCards = 0;
+  playerIn.sentOff = false;
   team.starters.push(playerIn);
   team.bench.push(playerOut);
   team.substitutions += 1;
@@ -391,7 +455,7 @@ function maybeAiSubstitution(state, side) {
     return;
   }
 
-  const starters = team.starters
+  const starters = activeStarters(team)
     .filter((player) => player.position !== "G")
     .map((player) => ({
       player,
@@ -500,7 +564,10 @@ function maybeChance(state, side) {
     return;
   }
 
-  const attackers = team.starters.filter((player) => player.position !== "G");
+  const attackers = activeStarters(team).filter((player) => player.position !== "G");
+  if (!attackers.length) {
+    return;
+  }
   const shooter = chooseWeighted(attackers, "attack");
   const assistPool = attackers.filter((player) => player.id !== shooter.id);
   const assister = assistPool.length ? chooseWeighted(assistPool, "passing") : null;

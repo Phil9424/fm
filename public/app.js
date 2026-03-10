@@ -1214,55 +1214,65 @@ function renderTalkOptions(stage, options) {
   `;
 }
 
-function renderMatchEventFeed(events) {
-  const list = (events || []).filter((event) => ["goal", "yellow", "red", "injury"].includes(event.type));
+function renderMatchEventFeed(liveMatch) {
+  const list = (liveMatch?.events || []).filter((event) => ["goal", "yellow", "red", "injury"].includes(event.type));
   if (!list.length) {
     return `<p class="secondary">${t("noData")}</p>`;
   }
 
-  return list.map((event) => {
-    let badge = "•";
-    let headline = safeText(event.playerName, "-");
-    let detail = "";
-    let className = "match-event";
+  return `
+    <div class="match-events-timeline">
+      ${list.map((event) => {
+        let badge = "•";
+        let headline = safeText(event.playerName, "-");
+        let detail = "";
+        let className = "match-event";
 
-    if (event.type === "goal") {
-      badge = "⚽";
-      headline = ui.language === "ru" ? "ГОООООООЛ" : "GOOOAAAL";
-      detail = `${safeText(event.playerName, "-")}${event.assistName ? ` • ${ui.language === "ru" ? "пас" : "assist"}: ${event.assistName}` : ""}`;
-      className += " goal";
-    } else if (event.type === "yellow") {
-      badge = "🟨";
-      headline = event.dismissal
-        ? (ui.language === "ru" ? "Вторая желтая" : "Second yellow")
-        : (ui.language === "ru" ? "Желтая карточка" : "Yellow card");
-      detail = safeText(event.playerName, "-");
-      className += " yellow";
-    } else if (event.type === "red") {
-      badge = "🟥";
-      headline = event.reason === "secondYellow"
-        ? (ui.language === "ru" ? "Удаление после второй желтой" : "Sent off after second yellow")
-        : (ui.language === "ru" ? "Прямая красная" : "Straight red");
-      detail = safeText(event.playerName, "-");
-      className += " red";
-    } else if (event.type === "injury") {
-      badge = "🤕";
-      headline = ui.language === "ru" ? "Травма" : "Injury";
-      detail = `${safeText(event.playerName, "-")}${event.injuryGames ? ` • ${ui.language === "ru" ? `вне игры ${event.injuryGames} матч.` : `out for ${event.injuryGames} match(es)`}` : ""}`;
-      className += " injury";
-    }
+        if (event.type === "goal") {
+          badge = "⚽";
+          headline = ui.language === "ru" ? "ГОООООООЛ" : "GOOOAAAL";
+          detail = `${safeText(event.playerName, "-")}${event.assistName ? ` • ${ui.language === "ru" ? "пас" : "assist"}: ${event.assistName}` : ""}`;
+          className += " goal";
+        } else if (event.type === "yellow") {
+          badge = "🟨";
+          headline = event.dismissal
+            ? (ui.language === "ru" ? "Вторая желтая" : "Second yellow")
+            : (ui.language === "ru" ? "Желтая карточка" : "Yellow card");
+          detail = safeText(event.playerName, "-");
+          className += " yellow";
+        } else if (event.type === "red") {
+          badge = "🟥";
+          headline = event.reason === "secondYellow"
+            ? (ui.language === "ru" ? "Удаление после второй желтой" : "Sent off after second yellow")
+            : (ui.language === "ru" ? "Прямая красная" : "Straight red");
+          detail = safeText(event.playerName, "-");
+          className += " red";
+        } else if (event.type === "injury") {
+          badge = "🤕";
+          headline = ui.language === "ru" ? "Травма" : "Injury";
+          detail = `${safeText(event.playerName, "-")}${event.injuryGames ? ` • ${ui.language === "ru" ? `пропустит ${event.injuryGames} матч.` : `out for ${event.injuryGames} match(es)`}` : ""}`;
+          className += " injury";
+        }
 
-    return `
-      <div class="${className}">
-        <div class="match-event-badge">${badge}</div>
-        <div class="match-event-body">
-          <strong>${headline}</strong>
-          <div>${detail}</div>
-        </div>
-        <div class="match-event-minute">${event.minute}'</div>
-      </div>
-    `;
-  }).join("");
+        const homeContent = event.side === "home"
+          ? `<div class="${className} left"><div class="match-event-badge">${badge}</div><div class="match-event-body"><strong>${headline}</strong><div>${detail}</div></div></div>`
+          : `<div></div>`;
+        const awayContent = event.side === "away"
+          ? `<div class="${className} right"><div class="match-event-body"><strong>${headline}</strong><div>${detail}</div></div><div class="match-event-badge">${badge}</div></div>`
+          : `<div></div>`;
+
+        return `
+          <div class="match-event-row">
+            ${homeContent}
+            <div class="match-event-center">
+              <span class="match-event-minute">${event.minute}'</span>
+            </div>
+            ${awayContent}
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
 function matchView() {
@@ -1383,7 +1393,7 @@ function matchView() {
       <section class="card">
         <p class="eyebrow">${t("matchEvents")}</p>
         <div class="grid">
-          ${renderMatchEventFeed(liveMatch.events || [])}
+          ${renderMatchEventFeed(liveMatch)}
         </div>
         <div class="action-row">
           <button id="continueAfterMatchButton" class="primary-button">${ui.language === "ru" ? "Далее" : "Continue"}</button>
@@ -1440,7 +1450,7 @@ function matchView() {
       <div class="card compact-card">
         <p class="eyebrow">${t("matchEvents")}</p>
         <div class="grid">
-          ${renderMatchEventFeed(liveMatch.events || [])}
+          ${renderMatchEventFeed(liveMatch)}
         </div>
       </div>
       <div class="grid two">

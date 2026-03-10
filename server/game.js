@@ -1260,7 +1260,7 @@ function computeLeagueTable(leagueId) {
     });
   });
 
-  const fixtures = db.prepare("SELECT * FROM fixtures WHERE league_id = ? AND status = 'played'").all(leagueId);
+  const fixtures = db.prepare("SELECT * FROM fixtures WHERE league_id = ? AND competition_type = 'league' AND status = 'played'").all(leagueId);
   fixtures.forEach((fixture) => {
     const home = table.get(fixture.home_club_id);
     const away = table.get(fixture.away_club_id);
@@ -1307,24 +1307,59 @@ function computeLeagueTable(leagueId) {
 }
 
 function getTopScorers(leagueId) {
-  return db
-    .prepare(`
-      SELECT
-        p.id,
-        p.name,
-        p.position,
-        p.goals,
-        p.assists,
-        c.name AS clubName,
-        c.logo_primary AS logoPrimary,
-        c.logo_secondary AS logoSecondary
-      FROM players p
-      JOIN clubs c ON c.id = p.club_id
-      WHERE c.league_id = ? AND (p.goals > 0 OR p.assists > 0)
-      ORDER BY p.goals DESC, p.assists DESC, p.overall DESC, p.name ASC
-      LIMIT 10
-    `)
-    .all(leagueId);
+  const players = db.prepare(`
+    SELECT
+      p.id,
+      p.name,
+      p.position,
+      p.overall,
+      c.name AS clubName,
+      c.logo_primary AS logoPrimary,
+      c.logo_secondary AS logoSecondary
+    FROM players p
+    JOIN clubs c ON c.id = p.club_id
+    WHERE c.league_id = ?
+  `).all(leagueId);
+
+  const playerMap = new Map(players.map((player) => [player.id, {
+    ...player,
+    goals: 0,
+    assists: 0,
+  }]));
+
+  const fixtures = db.prepare(`
+    SELECT events_json
+    FROM fixtures
+    WHERE league_id = ? AND competition_type = 'league' AND status = 'played'
+  `).all(leagueId);
+
+  fixtures.forEach((fixture) => {
+    let events = [];
+    try {
+      events = JSON.parse(fixture.events_json || "[]");
+    } catch (_error) {
+      events = [];
+    }
+
+    events.forEach((event) => {
+      if (event.type === "goal" && playerMap.has(event.playerId)) {
+        playerMap.get(event.playerId).goals += 1;
+      }
+      if (event.type === "goal" && event.assistId && playerMap.has(event.assistId)) {
+        playerMap.get(event.assistId).assists += 1;
+      }
+    });
+  });
+
+  return [...playerMap.values()]
+    .filter((player) => player.goals > 0 || player.assists > 0)
+    .sort((a, b) =>
+      b.goals - a.goals ||
+      b.assists - a.assists ||
+      b.overall - a.overall ||
+      a.name.localeCompare(b.name)
+    )
+    .slice(0, 10);
 }
 
 function getUpcomingFixtures(clubId, limit = 5) {

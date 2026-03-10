@@ -306,12 +306,21 @@ function applyFatigue(team) {
   }));
 }
 
+function chooseCardOffender(players) {
+  const weighted = players.map((player) => ({
+    ...player,
+    cardRisk: Math.max(1, 165 - player.defense - player.passing) * (player.matchYellowCards ? 0.24 : 1),
+  }));
+  const selected = chooseWeighted(weighted, "cardRisk");
+  return players.find((player) => player.id === selected.id) || players[0];
+}
+
 function maybeCardEvent(state, side) {
   const team = state[side];
   const opponentSide = side === "home" ? "away" : "home";
   const cardRoll = Math.random();
 
-  if (cardRoll > 0.038) {
+  if (cardRoll > 0.014) {
     return;
   }
 
@@ -320,9 +329,12 @@ function maybeCardEvent(state, side) {
     return;
   }
 
-  const offender = chooseWeighted(outfieldPlayers, "defense");
-  const isRed = cardRoll < 0.0045;
+  const offender = chooseCardOffender(outfieldPlayers);
+  const isRed = cardRoll < 0.00022;
   if (!isRed) {
+    if (offender.matchYellowCards >= 1 && Math.random() > 0.18) {
+      return;
+    }
     offender.matchYellowCards = Number(offender.matchYellowCards || 0) + 1;
     state.stats[side].yellow += 1;
     state.events.push({

@@ -371,15 +371,49 @@ th {
   padding-left: 10px;
 }
 
+.match-events-timeline {
+  position: relative;
+  display: grid;
+  gap: 12px;
+}
+
+.match-events-timeline::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: rgba(26, 34, 51, 0.16);
+}
+
+.match-event-row {
+  display: grid;
+  grid-template-columns: 1fr 68px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
 .match-event {
   display: grid;
-  grid-template-columns: 38px 1fr auto;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.74);
+  background: rgba(255, 255, 255, 0.78);
+  min-height: 70px;
+}
+
+.match-event.left {
+  grid-template-columns: 38px 1fr;
+  text-align: left;
+}
+
+.match-event.right {
+  grid-template-columns: 1fr 38px;
+  text-align: right;
 }
 
 .match-event.goal {
@@ -417,9 +451,22 @@ th {
   gap: 4px;
 }
 
+.match-event-center {
+  position: relative;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+}
+
 .match-event-minute {
+  min-width: 52px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(17, 19, 27, 0.92);
+  color: white;
+  text-align: center;
   font-family: "Barlow Condensed", sans-serif;
-  font-size: 26px;
+  font-size: 24px;
 }
 
  .squad-layout {
@@ -587,6 +634,22 @@ th {
 
   .match-score {
     font-size: 34px;
+  }
+
+  .match-event-row {
+    grid-template-columns: 1fr 54px 1fr;
+    gap: 8px;
+  }
+
+  .match-event {
+    padding: 10px 12px;
+    min-height: 64px;
+  }
+
+  .match-event-minute {
+    min-width: 44px;
+    padding: 7px 8px;
+    font-size: 20px;
   }
 
   .bottom-nav {

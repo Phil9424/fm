@@ -19,6 +19,7 @@ const {
   startLiveMatch,
   advanceLiveMatch,
   fastForwardLiveMatch,
+  continueAfterMatch,
   handleLiveAction,
 } = require("./game");
 
@@ -122,6 +123,10 @@ app.post("/api/match/fast-forward", asyncRoute(async (_request, response) => {
   response.json({ ok: true, match, state: buildState() });
 }));
 
+app.post("/api/match/continue", asyncRoute(async (_request, response) => {
+  continueAfterMatch();
+  response.json({ ok: true, state: buildState() });
+}));
 app.post("/api/match/action", asyncRoute(async (request, response) => {
   const match = handleLiveAction(request.body || {});
   response.json({ ok: true, match, state: buildState() });
@@ -143,3 +148,6 @@ startServer().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+
+
+

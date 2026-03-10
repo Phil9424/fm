@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #efe2c6;
   --bg-deep: #d9b67d;
   --ink: #1a2233;
@@ -354,24 +354,31 @@ th {
   padding-left: 10px;
 }
 
-.drag-layout {
+ .squad-layout {
   display: grid;
   grid-template-columns: 1.2fr 0.8fr;
   gap: 14px;
 }
 
-.drag-slot-list,
 .drag-pool {
   display: grid;
   gap: 10px;
 }
 
-.drag-slot {
-  min-height: 58px;
-  border: 1px dashed rgba(26, 34, 51, 0.18);
-  border-radius: 18px;
-  padding: 6px;
-  background: rgba(255, 255, 255, 0.48);
+.squad-slot {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.slot-selected {
+  border-color: rgba(184, 58, 35, 0.48);
+  box-shadow: 0 0 0 2px rgba(184, 58, 35, 0.14) inset;
 }
 
 .drag-player {
@@ -383,7 +390,6 @@ th {
   padding: 12px 14px;
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid var(--line);
-  cursor: grab;
 }
 
 .drag-player span,
@@ -459,6 +465,32 @@ th {
   display: none !important;
 }
 
+
+.grouped-slots {
+  display: grid;
+  gap: 12px;
+}
+
+.lineup-unit {
+  display: grid;
+  gap: 8px;
+}
+
+.lineup-unit-title {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+
+.lineup-unit-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.competition-fixture-table td,
+.competition-fixture-table th {
+  font-size: 12px;
+}
 @media (max-width: 760px) {
   .grid.two,
   .grid.three {
@@ -471,13 +503,17 @@ th {
 
   .selection-grid,
   .action-row,
-  .drag-layout {
+  .squad-layout {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .drag-layout {
+  .squad-layout {
     display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .squad-slot {
     grid-template-columns: 1fr;
   }
 
@@ -489,3 +525,5 @@ th {
     grid-template-columns: repeat(3, 1fr);
   }
 }
+
+

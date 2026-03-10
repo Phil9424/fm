@@ -153,6 +153,12 @@ function hashString(input) {
   return Math.abs(hash);
 }
 
+function deterministicRange(seed, min, max) {
+  const hash = hashString(seed || "seed");
+  const span = max - min + 1;
+  return min + (hash % span);
+}
+
 function colorPairFromName(name) {
   const hash = hashString(name);
   const hueA = hash % 360;
@@ -378,52 +384,67 @@ function calculatePlayerAttributes(player, club) {
   const appearanceFactor = clamp(appearances / 38, 0, 1);
   const goalFactor = clamp(goals / 20, 0, 1);
   const assistFactor = clamp(assists / 12, 0, 1);
-  const ageCurve = age < 23 ? 2 : age > 31 ? -Math.min(5, age - 31) : 0;
-  const base = 30 + club.strength * 0.34 - (club.tier === 2 ? 5 : 0);
+  const ageCurve =
+    age <= 22 ? 2 + (22 - age) * 0.45 :
+    age <= 29 ? 4 :
+    -Math.min(7, (age - 29) * 0.85);
+  const seed = `${player.name || "player"}|${player.birthDate || ""}|${club.name}|${pos}`;
+  const talentNoise = deterministicRange(seed, -4, 4);
+  const formNoise = deterministicRange(`${seed}|form`, -2, 2);
+  const tierOffset = club.tier === 1 ? 3 : -3;
+  const baseAbility =
+    49 +
+    club.strength * 0.37 +
+    tierOffset +
+    ageCurve +
+    minutesFactor * 8 +
+    appearanceFactor * 5 +
+    talentNoise +
+    formNoise;
 
-  let overall = base + ageCurve;
-  let attack = 42;
-  let defense = 42;
-  let passing = 42;
-  let stamina = 48;
+  let attack = 44;
+  let defense = 44;
+  let passing = 46;
+  let stamina = 50;
   let goalkeeping = 12;
+  let overall = baseAbility;
 
   if (pos === "G") {
-    overall += 6 + appearanceFactor * 8;
-    goalkeeping = 68 + appearanceFactor * 18;
-    defense = 50 + appearanceFactor * 10;
-    passing = 38 + appearanceFactor * 6;
-    attack = 12;
+    goalkeeping = 58 + baseAbility * 0.42 + appearanceFactor * 8 + deterministicRange(`${seed}|gk`, -3, 3);
+    defense = 34 + baseAbility * 0.2 + appearanceFactor * 4;
+    passing = 28 + baseAbility * 0.16 + assistFactor * 4;
+    attack = 10 + deterministicRange(`${seed}|atk`, 0, 4);
+    stamina = 42 + baseAbility * 0.12;
+    overall = goalkeeping * 0.58 + defense * 0.16 + passing * 0.1 + stamina * 0.06 + 13;
   } else if (pos === "D") {
-    overall += 3 + minutesFactor * 6;
-    defense = 58 + minutesFactor * 18;
-    passing = 46 + assistFactor * 12;
-    attack = 30 + goalFactor * 8;
-    stamina = 58 + minutesFactor * 16;
+    defense = 38 + baseAbility * 0.48 + minutesFactor * 8 + deterministicRange(`${seed}|def`, -3, 3);
+    passing = 31 + baseAbility * 0.31 + assistFactor * 8;
+    attack = 23 + baseAbility * 0.2 + goalFactor * 7;
+    stamina = 38 + baseAbility * 0.4 + minutesFactor * 6;
+    overall = defense * 0.4 + passing * 0.22 + stamina * 0.16 + attack * 0.14 + 8;
   } else if (pos === "M") {
-    overall += 4 + minutesFactor * 7 + assistFactor * 4;
-    defense = 44 + minutesFactor * 9;
-    passing = 58 + assistFactor * 20;
-    attack = 42 + goalFactor * 14;
-    stamina = 56 + minutesFactor * 16;
+    passing = 36 + baseAbility * 0.46 + assistFactor * 10 + deterministicRange(`${seed}|pas`, -3, 3);
+    attack = 31 + baseAbility * 0.35 + goalFactor * 9;
+    defense = 28 + baseAbility * 0.29 + minutesFactor * 5;
+    stamina = 40 + baseAbility * 0.41 + minutesFactor * 6;
+    overall = passing * 0.34 + attack * 0.24 + defense * 0.18 + stamina * 0.18 + 9;
   } else {
-    overall += 5 + minutesFactor * 7 + goalFactor * 11;
-    defense = 26 + appearanceFactor * 5;
-    passing = 42 + assistFactor * 14;
-    attack = 62 + goalFactor * 20;
-    stamina = 52 + minutesFactor * 13;
+    attack = 41 + baseAbility * 0.48 + goalFactor * 13 + deterministicRange(`${seed}|fin`, -3, 3);
+    passing = 28 + baseAbility * 0.31 + assistFactor * 9;
+    defense = 20 + baseAbility * 0.18 + appearanceFactor * 3;
+    stamina = 34 + baseAbility * 0.37 + minutesFactor * 5;
+    overall = attack * 0.42 + passing * 0.2 + stamina * 0.18 + defense * 0.1 + 12;
   }
 
-  overall += appearanceFactor * 6 + goalFactor * 4 + assistFactor * 3;
-  overall = clamp(Math.round(overall), 46, 92);
+  overall = clamp(Math.round(overall), 49, 92);
 
   return {
     age,
     overall,
-    attack: clamp(Math.round(attack), 12, 94),
-    defense: clamp(Math.round(defense), 12, 94),
-    passing: clamp(Math.round(passing), 12, 94),
-    stamina: clamp(Math.round(stamina), 20, 95),
+    attack: clamp(Math.round(attack), 10, 95),
+    defense: clamp(Math.round(defense), 10, 95),
+    passing: clamp(Math.round(passing), 10, 95),
+    stamina: clamp(Math.round(stamina), 24, 96),
     goalkeeping: clamp(Math.round(goalkeeping), 10, 96),
     wage: Math.round(overall * overall * (club.tier === 1 ? 44 : 29)),
     value: Math.round(overall * overall * overall * (club.tier === 1 ? 110 : 82)),
@@ -602,7 +623,7 @@ async function importHistoricalSeason() {
           minutes: player.minutes || 0,
           shots: player.shots || 0,
           shotsOnGoal: player.shotsOnGoal || 0,
-          source: "statscrew",
+          source: "statscrew-fifa08-profile",
         });
       }
     }
@@ -620,3 +641,5 @@ module.exports = {
   primaryPosition,
   colorPairFromName,
 };
+
+

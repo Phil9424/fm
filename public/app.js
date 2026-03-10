@@ -1,4 +1,4 @@
-const app = document.getElementById("app");
+﻿const app = document.getElementById("app");
 const bottomNav = document.getElementById("bottomNav");
 const refreshButton = document.getElementById("refreshButton");
 const toast = document.getElementById("toast");
@@ -222,7 +222,7 @@ const I18N = {
 
 const OPTION_LABELS = {
   mentality: {
-    ultraDefensive: { ru: "Ультраоборонительный", en: "Ultra-defensive" },
+    ultraDefensive: { ru: "Ультра-оборонительный", en: "Ultra-defensive" },
     defensive: { ru: "Оборонительный", en: "Defensive" },
     balanced: { ru: "Сбалансированный", en: "Balanced" },
     positive: { ru: "Позитивный", en: "Positive" },
@@ -230,13 +230,13 @@ const OPTION_LABELS = {
     allOut: { ru: "Ва-банк", en: "All-out" },
   },
   style: {
-    possession: { ru: "Контроль мяча", en: "Possession" },
+    possession: { ru: "Владение", en: "Possession" },
     tikiTaka: { ru: "Тики-така", en: "Tiki-taka" },
-    direct: { ru: "Вертикальный", en: "Direct" },
+    direct: { ru: "Прямой", en: "Direct" },
     counter: { ru: "Контратаки", en: "Counter" },
-    wingPlay: { ru: "Через фланги", en: "Wing play" },
+    wingPlay: { ru: "Фланговая игра", en: "Wing play" },
     pressing: { ru: "Прессинг", en: "Pressing" },
-    longBall: { ru: "Длинные передачи", en: "Long ball" },
+    longBall: { ru: "Длинный пас", en: "Long ball" },
   },
   competitionType: {
     league: { ru: "Лига", en: "League" },
@@ -247,12 +247,24 @@ const OPTION_LABELS = {
   status: {
     pending: { ru: "Ожидается", en: "Pending" },
     played: { ru: "Сыгран", en: "Played" },
-    accepted: { ru: "Согласовано", en: "Accepted" },
-    negotiating: { ru: "Торг", en: "Negotiating" },
-    rejected: { ru: "Отказ", en: "Rejected" },
+    accepted: { ru: "Принято", en: "Accepted" },
+    negotiating: { ru: "Переговоры", en: "Negotiating" },
+    rejected: { ru: "Отклонено", en: "Rejected" },
     withdrawn: { ru: "Отозвано", en: "Withdrawn" },
     completed: { ru: "Завершено", en: "Completed" },
   },
+};
+const FORMATION_SLOTS = {
+  "4-4-2": ["G", "D", "D", "D", "D", "M", "M", "M", "M", "F", "F"],
+  "4-3-3": ["G", "D", "D", "D", "D", "M", "M", "M", "F", "F", "F"],
+  "4-2-3-1": ["G", "D", "D", "D", "D", "M", "M", "M", "M", "M", "F"],
+  "4-1-4-1": ["G", "D", "D", "D", "D", "M", "M", "M", "M", "M", "F"],
+  "4-5-1": ["G", "D", "D", "D", "D", "M", "M", "M", "M", "M", "F"],
+  "3-5-2": ["G", "D", "D", "D", "M", "M", "M", "M", "M", "F", "F"],
+  "3-4-3": ["G", "D", "D", "D", "M", "M", "M", "M", "F", "F", "F"],
+  "5-3-2": ["G", "D", "D", "D", "D", "D", "M", "M", "M", "F", "F"],
+  "5-4-1": ["G", "D", "D", "D", "D", "D", "M", "M", "M", "M", "F"],
+  "4-1-2-1-2": ["G", "D", "D", "D", "D", "M", "M", "M", "M", "F", "F"],
 };
 
 const ui = {
@@ -266,19 +278,124 @@ const ui = {
   poolDraft: null,
   draggedPlayerId: null,
   showAllScorers: false,
+  showAllEurope: false,
+  showAllEuropeDetails: false,
+  showAllCups: false,
+  selectedLineupSlot: null,
 };
 
 function t(key) {
-  return I18N[ui.language][key] || key;
+  const lang = ui.language === "ru" ? "ru" : "en";
+  return I18N[lang]?.[key] || I18N.en[key] || key;
 }
 
+function looksMojibake(text) {
+  if (!text || typeof text !== "string") {
+    return false;
+  }
+  const stripped = text.replace(/[\s0-9.,:;!?()\-\+\/=€$'"`]/g, "");
+  if (!stripped) {
+    return false;
+  }
+  const suspicious = (stripped.match(/[РСВÐÑÂÃ]/g) || []).length;
+  return suspicious >= 3 && suspicious / stripped.length > 0.35;
+}
+
+function cp1251ByteFromCharCode(code) {
+  if (code <= 0x7F) return code;
+  if (code >= 0x0410 && code <= 0x044F) return code - 0x350;
+  const map = {
+    0x0401: 0xA8, 0x0451: 0xB8, 0x0404: 0xAA, 0x0454: 0xBA, 0x0407: 0xAF, 0x0457: 0xBF,
+    0x0406: 0xB2, 0x0456: 0xB3, 0x040E: 0xA1, 0x045E: 0xA2, 0x2116: 0xB9,
+  };
+  return map[code] ?? null;
+}
+
+function decodeBrokenRu(text) {
+  if (!text || typeof text !== "string" || !looksMojibake(text)) {
+    return text;
+  }
+  try {
+    let decoded = text;
+    for (let pass = 0; pass < 3; pass += 1) {
+      const compact = decoded.replace(/[\u00A0\s]+/g, "").replace(/В/g, "");
+      const bytes = [];
+      for (const ch of compact) {
+        const code = ch.charCodeAt(0);
+        const b = cp1251ByteFromCharCode(code);
+        if (b === null) {
+          return decoded;
+        }
+        bytes.push(b);
+      }
+      const next = new TextDecoder("utf-8").decode(new Uint8Array(bytes));
+      if (!next || next === decoded) {
+        break;
+      }
+      decoded = next;
+      if (!looksMojibake(decoded)) {
+        break;
+      }
+    }
+    return decoded;
+  } catch (_error) {
+    return text;
+  }
+}
+function safeText(text, fallback = "") {
+  if (!text) {
+    return fallback;
+  }
+  const decoded = decodeBrokenRu(String(text));
+  if (looksMojibake(decoded)) {
+    return fallback;
+  }
+  return decoded;
+}
 function labelFor(group, value) {
-  return OPTION_LABELS[group]?.[value]?.[ui.language] || value;
+  if (ui.language === "ru") {
+    const ru = {
+      mentality: {
+        ultraDefensive: "Ультра-оборонительный",
+        defensive: "Оборонительный",
+        balanced: "Сбалансированный",
+        positive: "Позитивный",
+        attacking: "Атакующий",
+        allOut: "Ва-банк",
+      },
+      style: {
+        possession: "Владение",
+        tikiTaka: "Тики-така",
+        direct: "Прямой",
+        counter: "Контратаки",
+        wingPlay: "Фланговая игра",
+        pressing: "Прессинг",
+        longBall: "Длинный пас",
+      },
+      competitionType: {
+        league: "Лига",
+        cup: "Кубок",
+        champions: "Лига чемпионов",
+        uefa: "Кубок УЕФА",
+      },
+      status: {
+        pending: "Ожидается",
+        played: "Сыгран",
+        accepted: "Принято",
+        negotiating: "Переговоры",
+        rejected: "Отклонено",
+        withdrawn: "Отозвано",
+        completed: "Завершено",
+      },
+    };
+    return ru[group]?.[value] || OPTION_LABELS[group]?.[value]?.en || value;
+  }
+  return OPTION_LABELS[group]?.[value]?.en || value;
 }
 
 function competitionLabel(match) {
-  const name = match.competitionName || match.competition_name || "";
-  const stage = stageLabel(match.competitionStage || match.competition_stage || "");
+  const name = safeText(match.competitionName || match.competition_name || "");
+  const stage = stageLabel(safeText(match.competitionStage || match.competition_stage || ""));
   const type = labelFor("competitionType", match.competitionType || match.competition_type);
   const bits = [name || type, stage].filter(Boolean);
   return bits.join(" - ");
@@ -289,15 +406,25 @@ function statusLabel(status) {
 }
 
 function stageLabel(stage) {
-  const labels = {
-    "1/8 финала": { ru: "1/8 финала", en: "Round of 16" },
-    "1/4 финала": { ru: "1/4 финала", en: "Quarter-final" },
-    "1/2 финала": { ru: "1/2 финала", en: "Semi-final" },
-    "Финал": { ru: "Финал", en: "Final" },
-  };
-  return labels[stage]?.[ui.language] || stage;
-}
+  const normalized = decodeBrokenRu(stage || "");
+  if (!normalized || looksMojibake(normalized) || hasMojibake(normalized) || normalized.length > 48) {
+    return ui.language === "ru" ? "Групповой этап" : "Group stage";
+  }
+  const key =
+    normalized.includes("Round of 16") || normalized.includes("1/8") ? "Round of 16" :
+    normalized.includes("Quarter-final") || normalized.includes("1/4") ? "Quarter-final" :
+    normalized.includes("Semi-final") || normalized.includes("1/2") ? "Semi-final" :
+    normalized.includes("Final") ? "Final" :
+    normalized;
 
+  const labels = {
+    "Round of 16": { ru: "1/8 финала", en: "Round of 16" },
+    "Quarter-final": { ru: "1/4 финала", en: "Quarter-final" },
+    "Semi-final": { ru: "1/2 финала", en: "Semi-final" },
+    "Final": { ru: "Финал", en: "Final" },
+  };
+  return labels[key]?.[ui.language] || safeText(normalized, normalized);
+}
 function money(value) {
   return new Intl.NumberFormat(ui.language === "ru" ? "ru-RU" : "en-US", {
     style: "currency",
@@ -317,6 +444,67 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+function hasMojibake(text = "") {
+  const value = String(text);
+  return looksMojibake(value) || /[\u0420\u0421][\u0400-\u04FF]/.test(value) || /[\u00D0\u00D1][\u00A0-\u00BF]/.test(value);
+}
+
+function cleanUiText(text, fallback = "") {
+  if (text == null) {
+    return fallback;
+  }
+  const value = String(text).trim();
+  if (!value) {
+    return fallback;
+  }
+  return hasMojibake(value) ? fallback : value;
+}
+
+function financeEntryDescription(entry) {
+  const fallbackByCategory = ui.language === "ru"
+    ? {
+      board: "Финансы совета директоров",
+      matchday: "Доход в день матча",
+      travel: "Логистика и поездки",
+      transfer: "Трансферная операция",
+      ticketing: "Обновлена цена билета",
+      wage: "Выплата зарплат",
+      camp: "Тренировочный сбор",
+    }
+    : {
+      board: "Board finances",
+      matchday: "Matchday income",
+      travel: "Travel and logistics",
+      transfer: "Transfer operation",
+      ticketing: "Ticket policy updated",
+      wage: "Wage payment",
+      camp: "Training camp",
+    };
+  return cleanUiText(entry.description, fallbackByCategory[entry.category] || (ui.language === "ru" ? "Операция клуба" : "Club operation"));
+}
+
+function transferOfferMessage(offer) {
+  const fallbackByStatus = {
+    pending: "Awaiting response.",
+    negotiating: "Counter terms received.",
+    accepted: "Offer accepted. Confirm to complete.",
+    completed: "Transfer completed.",
+    rejected: "Offer rejected.",
+    withdrawn: "Offer withdrawn.",
+  };
+  return cleanUiText(offer.message, fallbackByStatus[offer.status] || "");
+}
+function boardExpectationText(text = "") {
+  const value = cleanUiText(text, "");
+  if (ui.language !== "ru") {
+    return value;
+  }
+  const lower = value.toLowerCase();
+  if (lower.includes("promotion") || lower.includes("europe")) return "Борьба за повышение или еврокубки";
+  if (lower.includes("mid-table") || lower.includes("mid table")) return "Надежное место в середине таблицы";
+  if (lower.includes("title")) return "Борьба за чемпионство";
+  return value || "Стабильные результаты";
+}
 function initials(name = "") {
   return name
     .split(" ")
@@ -338,9 +526,9 @@ function showToast(message) {
 }
 
 function syncLanguageFromState() {
-  if (ui.state?.manager?.language) {
-    ui.language = ui.state.manager.language;
-  }
+  const managerLang = ui.state?.manager?.language;
+  const storedLang = localStorage.getItem("lfm-lang");
+  ui.language = managerLang === "ru" || storedLang === "ru" ? "ru" : "en";
   localStorage.setItem("lfm-lang", ui.language);
   refreshButton.textContent = t("refresh");
 }
@@ -352,7 +540,7 @@ async function api(url, options = {}) {
   });
   const payload = await response.json();
   if (!payload.ok) {
-    throw new Error(payload.error || (ui.language === "ru" ? "Запрос не выполнен" : "Request failed"));
+    throw new Error(payload.error || (ui.language === "ru" ? "Ошибка запроса" : "Request failed"));
   }
   return payload;
 }
@@ -397,7 +585,7 @@ function playerById(id) {
 }
 
 async function changeLanguage(language) {
-  ui.language = language === "en" ? "en" : "ru";
+  ui.language = language === "ru" ? "ru" : "en";
   localStorage.setItem("lfm-lang", ui.language);
   refreshButton.textContent = t("refresh");
   if (ui.state?.manager) {
@@ -416,7 +604,7 @@ function toolbarView() {
       <div class="split">
         <div>
           <p class="eyebrow">${t("toolbar")}</p>
-          <strong>${ui.state?.club?.name || (ui.language === "ru" ? "Легендарный менеджер" : "Legacy Football Manager")}</strong>
+          <strong>${ui.state?.club?.name || (ui.language === "ru" ? "Футбольный менеджер" : "Legacy Football Manager")}</strong>
         </div>
         <div class="toolbar-actions">
           <select id="languageSelect">
@@ -470,7 +658,7 @@ function renderSetup() {
               <div>
                 <strong>${club.name}</strong>
                 <div class="secondary">${leagueName}</div>
-                <div class="soft-pill">${club.boardExpectation}</div>
+                <div class="soft-pill">${boardExpectationText(club.boardExpectation)}</div>
               </div>
             </div>
           </button>
@@ -478,7 +666,7 @@ function renderSetup() {
       </div>
       <div class="field" style="margin-top:16px">
         <label>${t("managerName")}</label>
-        <input id="managerName" value="${ui.language === "ru" ? "Легендарный менеджер" : "Legacy Manager"}" />
+        <input id="managerName" value="Legacy Manager" />
       </div>
       <div class="action-row">
         <button id="startCareerButton" class="primary-button">${t("startCareer")}</button>
@@ -502,6 +690,7 @@ function renderSetup() {
 
 function dashboardView() {
   const { club, manager, board, nextFixture, roundSummary } = ui.state;
+  const leagueOnlySummary = (roundSummary || []).filter((match) => !match.competitionName || match.competitionName === club.leagueName);
   return `
     <section class="hero-card" style="background:linear-gradient(135deg, ${club.logoPrimary}, ${club.logoSecondary})">
       <div class="hero-top">
@@ -522,7 +711,7 @@ function dashboardView() {
           <div style="font-size:34px;font-family:'Barlow Condensed',sans-serif">${manager.boardConfidence}</div>
         </div>
       </div>
-      <p>${board.message}</p>
+      <p>${safeText(board.message, ui.language === "ru" ? "Совет директоров ожидает стабильные результаты." : "The board expects stable results.")}</p>
     </section>
 
     <section class="grid three">
@@ -550,7 +739,7 @@ function dashboardView() {
     <section class="card">
       <p class="eyebrow">${t("latestResults")}</p>
       <div class="grid">
-        ${(roundSummary || []).length ? roundSummary.map((match) => `
+        ${leagueOnlySummary.length ? leagueOnlySummary.map((match) => `
           <div class="split">
             <span>${match.homeClubName}</span>
             <strong>${match.homeScore} - ${match.awayScore}</strong>
@@ -565,6 +754,14 @@ function dashboardView() {
 function squadView() {
   ensureDraft();
   const poolPlayers = ui.poolDraft.map(playerById).filter(Boolean);
+  const formationSlots = FORMATION_SLOTS[ui.state.tactics.formation] || FORMATION_SLOTS["4-4-2"];
+  const lineupSections = [
+    { code: "G", label: ui.language === "ru" ? "Вратарь" : "Goalkeeper" },
+    { code: "D", label: ui.language === "ru" ? "Защита" : "Defenders" },
+    { code: "M", label: ui.language === "ru" ? "Полузащита" : "Midfielders" },
+    { code: "F", label: ui.language === "ru" ? "Нападение" : "Forwards" },
+  ];
+
   return `
     <section class="card">
       <p class="eyebrow">${t("tactics")}</p>
@@ -582,15 +779,49 @@ function squadView() {
         <label>${t("style")}</label>
         <select id="styleSelect">${ui.state.tactics.styles.map((option) => `<option value="${option}" ${option === ui.state.tactics.style ? "selected" : ""}>${labelFor("style", option)}</option>`).join("")}</select>
       </div>
-      <div class="drag-layout">
+      <div class="split">
+        <span class="secondary">${ui.language === "ru" ? "Нажми на слот, затем выбери игрока ниже." : "Tap a slot, then choose a player below."}</span>
+        <strong>${ui.language === "ru" ? "Автосохранение включено" : "Auto-save is on"}</strong>
+      </div>
+      <div class="squad-layout">
         <div class="card compact-card">
           <p class="eyebrow">${t("yourTeam")}</p>
-          <div class="drag-slot-list">
-            ${ui.lineupDraft.map((playerId, index) => {
-              const player = playerById(playerId);
+          <div class="grouped-slots">
+            ${lineupSections.map((section) => {
+              const indexes = formationSlots
+                .map((slot, index) => ({ slot, index }))
+                .filter((entry) => entry.slot === section.code)
+                .map((entry) => entry.index);
+
+              if (!indexes.length) {
+                return "";
+              }
+
               return `
-                <div class="drag-slot" data-drop-type="lineup" data-drop-index="${index}">
-                  ${player ? `<div class="drag-player" draggable="true" data-player-id="${player.id}" data-source="lineup">${player.name}<span>${player.position} - ${player.overall}</span></div>` : `<div class="drag-placeholder">#${index + 1}</div>`}
+                <div class="lineup-unit">
+                  <div class="lineup-unit-title">${section.label} (${indexes.length})</div>
+                  <div class="lineup-unit-grid">
+                    ${indexes.map((index) => {
+                      const player = playerById(ui.lineupDraft[index]);
+                      const selected = ui.selectedLineupSlot === index ? "slot-selected" : "";
+                      const slotCode = formationSlots[index];
+                      return `
+                        <div class="squad-slot ${selected}" data-slot-index="${index}">
+                          <div>
+                            <strong>${ui.language === "ru" ? `Слот ${index + 1}` : `Slot ${index + 1}`}</strong>
+                            <div class="secondary">${slotCode}</div>
+                          </div>
+                          ${player
+                            ? `<div><strong>${player.name}</strong><div class="secondary">${player.position} - ${player.overall}</div></div>`
+                            : `<div class="drag-placeholder">${ui.language === "ru" ? "Пусто" : "Empty"}</div>`}
+                          <div class="action-row">
+                            <button type="button" class="mini-button" data-slot-pick="${index}">${ui.language === "ru" ? "Выбрать" : "Pick"}</button>
+                            ${player ? `<button type="button" class="mini-button" data-to-pool="${player.id}">${ui.language === "ru" ? "Снять" : "Out"}</button>` : ""}
+                          </div>
+                        </div>
+                      `;
+                    }).join("")}
+                  </div>
                 </div>
               `;
             }).join("")}
@@ -598,23 +829,21 @@ function squadView() {
         </div>
         <div class="card compact-card">
           <p class="eyebrow">${t("benchAndReserves")}</p>
-          <div class="drag-pool" data-drop-type="pool">
+          <div class="drag-pool">
             ${poolPlayers.map((player) => `
-              <div class="drag-player" draggable="true" data-player-id="${player.id}" data-source="pool">
-                ${player.name}
-                <span>${player.position} - ${player.overall}</span>
+              <div class="drag-player">
+                <div><strong>${player.name}</strong><span>${player.position} - ${player.overall}</span></div>
+                <div class="action-row">
+                  <button type="button" class="mini-button" data-to-lineup="${player.id}">${ui.language === "ru" ? "В состав" : "To lineup"}</button>
+                </div>
               </div>
             `).join("")}
           </div>
         </div>
       </div>
-      <div class="action-row">
-        <button id="saveTacticsButton" class="primary-button">${t("saveTactics")}</button>
-      </div>
     </section>
   `;
 }
-
 function transfersView() {
   return `
     <section class="card">
@@ -671,7 +900,7 @@ function transfersView() {
               <strong>${offer.playerName}</strong>
               <span class="soft-pill">${statusLabel(offer.status)}</span>
             </div>
-            <div class="secondary">${offer.message || ""}</div>
+            <div class="secondary">${transferOfferMessage(offer)}</div>
             <div class="split">
               <span>${money(offer.proposed_fee || offer.proposedFee)}</span>
               ${offer.response_fee ? `<strong>${money(offer.response_fee)}</strong>` : ""}
@@ -693,6 +922,14 @@ function transfersView() {
 
 function financeView() {
   const { finance, manager } = ui.state;
+  const campName = (camp) => {
+    if (ui.language !== "ru") {
+      return camp.name;
+    }
+    const names = { madrid: "Сбор в Мадриде", lisbon: "Сбор в Лиссабоне", dubai: "Сбор в Дубае" };
+    return names[camp.id] || safeText(camp.name, "Тренировочный сбор");
+  };
+  const campEffect = (camp) => safeText(camp.effect, ui.language === "ru" ? "Мораль, форма и навыки всей команды растут." : "Morale, fitness and squad attributes improve.");
   return `
     <section class="card">
       <p class="eyebrow">${t("finances")}</p>
@@ -724,8 +961,8 @@ function financeView() {
         ${finance.camps.map((camp) => `
           <div class="split">
             <div>
-              <strong>${camp.name}</strong>
-              <div class="secondary">${camp.effect}</div>
+              <strong>${campName(camp)}</strong>
+              <div class="secondary">${campEffect(camp)}</div>
             </div>
             <button class="mini-button" data-camp-id="${camp.id}">${money(camp.cost)}</button>
           </div>
@@ -739,7 +976,7 @@ function financeView() {
         ${finance.recentEntries.map((entry) => `
           <div class="split">
             <div>
-              <strong>${entry.description}</strong>
+              <strong>${financeEntryDescription(entry)}</strong>
               <div class="secondary">${t("round")} ${entry.roundNo}</div>
             </div>
             <strong style="color:${entry.amount >= 0 ? "var(--ok)" : "var(--danger)"}">${money(entry.amount)}</strong>
@@ -750,50 +987,124 @@ function financeView() {
   `;
 }
 
-function competitionCards(cards) {
-  return cards.length ? cards.map((card) => `
+function isManagerFixture(match, managerClubId) {
+  return match.homeClubId === managerClubId || match.awayClubId === managerClubId;
+}
+
+function buildPostRoundSummary(roundSummary, club, matchContext) {
+  const rows = Array.isArray(roundSummary) ? roundSummary : [];
+  const competitionType = matchContext?.competitionType || "league";
+  const competitionName = matchContext?.competitionName || "";
+
+  if (competitionType === "league") {
+    return rows.filter((match) => {
+      const matchType = match.competitionType || "league";
+      const matchName = match.competitionName || "";
+      return matchType === "league" && (!matchName || matchName === club.leagueName);
+    });
+  }
+
+  return rows.filter((match) => {
+    const matchType = match.competitionType || "";
+    const matchName = match.competitionName || "";
+    return matchType === competitionType && (!competitionName || matchName === competitionName);
+  });
+}
+function competitionCards(cards, managerClubId, ownOnly = false, hideNonManagerDetails = false) {
+  return cards.length ? cards.map((card) => {
+    const cardTypeLabel = labelFor("competitionType", card.type || "cup");
+    const cardName = safeText(card.name, cardTypeLabel);
+    const cardStage = stageLabel(safeText(card.currentStage, "")) || "-";
+    const restrictToMine = (ownOnly || hideNonManagerDetails) && card.involvesManager;
+    const upcomingList = restrictToMine
+      ? (card.nextFixtures.filter((match) => isManagerFixture(match, managerClubId)).length
+          ? card.nextFixtures.filter((match) => isManagerFixture(match, managerClubId))
+          : card.nextFixtures)
+      : card.nextFixtures;
+
+    const recentList = restrictToMine
+      ? (card.recentResults.filter((match) => isManagerFixture(match, managerClubId)).length
+          ? card.recentResults.filter((match) => isManagerFixture(match, managerClubId))
+          : card.recentResults)
+      : card.recentResults;
+
+    const allGroupTables = card.groupTables || [];
+    const visibleGroupTables = hideNonManagerDetails && card.involvesManager
+      ? (allGroupTables.filter((groupTable) => groupTable.rows.some((row) => row.clubId === managerClubId)).length
+          ? allGroupTables.filter((groupTable) => groupTable.rows.some((row) => row.clubId === managerClubId))
+          : allGroupTables)
+      : allGroupTables;
+
+    return `
     <div class="offer-card">
       <div class="split">
-        <strong>${card.name}</strong>
-        <span class="soft-pill">${stageLabel(card.currentStage) || "-"}</span>
+        <strong>${cardName}</strong>
+        <span class="soft-pill">${cardStage}</span>
       </div>
       <div class="secondary">${t("upcomingMatches")}</div>
       <div class="grid">
-        ${card.nextFixtures.length ? card.nextFixtures.map((match) => `
+        ${upcomingList.length ? upcomingList.slice(0, 4).map((match) => `
           <div class="split">
-            <span>${match.homeClubName} - ${match.awayClubName}</span>
+            <span>${safeText(match.homeClubName, "-")} - ${safeText(match.awayClubName, "-")}${isManagerFixture(match, managerClubId) ? (ui.language === "ru" ? " (ты)" : " (you)") : ""}</span>
             <strong>${formatDate(match.matchDate)}</strong>
           </div>
         `).join("") : `<div class="secondary">${t("noData")}</div>`}
       </div>
       <div class="secondary">${t("recentResultsTitle")}</div>
       <div class="grid">
-        ${card.recentResults.length ? card.recentResults.map((match) => `
+        ${recentList.length ? recentList.slice(0, 4).map((match) => `
           <div class="split">
-            <span>${match.homeClubName} - ${match.awayClubName}</span>
-            <strong>${match.homeScore}-${match.awayScore}${match.resultNote ? ` • ${match.resultNote}` : ""}</strong>
+            <span>${safeText(match.homeClubName, "-")} - ${safeText(match.awayClubName, "-")}</span>
+            <strong>${match.homeScore}-${match.awayScore}${match.resultNote ? ` | ${safeText(match.resultNote, "")}` : ""}</strong>
           </div>
         `).join("") : `<div class="secondary">${t("noData")}</div>`}
       </div>
+      ${visibleGroupTables?.length ? `
+        <div class="secondary">${ui.language === "ru" ? "Таблицы групп" : "Group tables"}</div>
+        <div class="table-wrap">
+          ${visibleGroupTables.map((groupTable) => `
+            <table class="competition-fixture-table">
+              <thead><tr><th colspan="6">${ui.language === "ru" ? "Группа" : "Group"} ${groupTable.group}</th></tr></thead>
+              <tbody>
+                ${groupTable.rows.map((row) => `
+                  <tr>
+                    <td>${safeText(row?.clubName, "-")}${row?.clubId === managerClubId ? " *" : ""}</td>
+                    <td>${row?.played ?? 0}</td>
+                    <td>${row?.goalDifference ?? 0}</td>
+                    <td>${row?.points ?? 0}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          `).join("")}
+        </div>
+      ` : ""}
     </div>
-  `).join("") : `<p class="secondary">${t("noData")}</p>`;
+  `;
+  }).join("") : `<p class="secondary">${t("noData")}</p>`;
 }
 
 function seasonView() {
   const scorers = ui.showAllScorers ? ui.state.topScorers : ui.state.topScorers.slice(0, 5);
+  const europeCards = ui.state.competitionOverview?.europe || [];
+  const managerEuropeCards = europeCards.filter((card) => card.involvesManager);
+  const visibleEuropeCards = ui.showAllEurope || !managerEuropeCards.length ? europeCards : managerEuropeCards;
+  const cupCards = ui.state.competitionOverview?.domesticCups || [];
+  const managerCupCards = cupCards.filter((card) => card.sameCountry);
+  const visibleCupCards = ui.showAllCups || !managerCupCards.length ? cupCards : managerCupCards;
   return `
     <section class="card">
       <p class="eyebrow">${t("leagueTable")}</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>#</th><th>${ui.language === "ru" ? "Клуб" : "Club"}</th><th>${ui.language === "ru" ? "И" : "P"}</th><th>${ui.language === "ru" ? "РМ" : "GD"}</th><th>${ui.language === "ru" ? "О" : "Pts"}</th></tr></thead>
+          <thead><tr><th>#</th><th>Club</th><th>P</th><th>GD</th><th>Pts</th></tr></thead>
           <tbody>
             ${ui.state.leagueTable.map((row) => `
               <tr>
                 <td>${row.rank}</td>
                 <td>${row.clubName}</td>
-                <td>${row.played}</td>
-                <td>${row.goalDifference}</td>
+                <td>${row?.played ?? 0}</td>
+                <td>${row?.goalDifference ?? 0}</td>
                 <td><strong>${row.points}</strong></td>
               </tr>
             `).join("")}
@@ -818,18 +1129,34 @@ function seasonView() {
         </div>
       ` : ""}
     </section>
-
     <section class="card">
-      <p class="eyebrow">${t("eurocups")}</p>
+      <div class="split">
+        <p class="eyebrow">${t("eurocups")}</p>
+        ${managerEuropeCards.length && !ui.showAllEurope ? `<button class="mini-button" data-toggle-europe="all">${t("showAll")}</button>` : ""}
+        ${ui.showAllEurope ? `<button class="mini-button" data-toggle-europe="mine">${ui.language === "ru" ? "Мои турниры" : "My competitions"}</button>` : ""}
+      </div>
+      ${managerEuropeCards.length ? `
+        <div class="action-row">
+          <button class="ghost-button" data-toggle-europe-details="${ui.showAllEuropeDetails ? "mine" : "all"}">
+            ${ui.showAllEuropeDetails
+              ? (ui.language === "ru" ? "Только моя группа и мои матчи" : "Only my group and my matches")
+              : (ui.language === "ru" ? "Показать все группы и матчи" : "Show all groups and matches")}
+          </button>
+        </div>
+      ` : ""}
       <div class="grid">
-        ${competitionCards(ui.state.competitionOverview?.europe || [])}
+        ${competitionCards(visibleEuropeCards, ui.state.club.id, !ui.showAllEurope, !ui.showAllEuropeDetails)}
       </div>
     </section>
 
     <section class="card">
-      <p class="eyebrow">${t("domesticCups")}</p>
+      <div class="split">
+        <p class="eyebrow">${t("domesticCups")}</p>
+        ${managerCupCards.length && !ui.showAllCups ? `<button class="mini-button" data-toggle-cups="all">${t("showAll")}</button>` : ""}
+        ${ui.showAllCups ? `<button class="mini-button" data-toggle-cups="mine">${ui.language === "ru" ? "Моя страна" : "Home country"}</button>` : ""}
+      </div>
       <div class="grid">
-        ${competitionCards(ui.state.competitionOverview?.domesticCups || [])}
+        ${competitionCards(visibleCupCards, ui.state.club.id, !ui.showAllCups)}
       </div>
     </section>
 
@@ -843,7 +1170,7 @@ function seasonView() {
               <div class="secondary">${competitionLabel(match)}</div>
               <div class="secondary">${match.homeClubName} - ${match.awayClubName}</div>
             </div>
-            <span class="soft-pill">${match.status === "played" ? `${match.homeScore}-${match.awayScore}${match.resultNote ? ` | ${match.resultNote}` : ""}` : `${t("round")} ${match.roundNo}`}</span>
+            <span class="soft-pill">${match.status === "played" ? `${match.homeScore}-${match.awayScore}${match.resultNote ? ` | ${safeText(match.resultNote, "")}` : ""}` : `${t("round")} ${match.roundNo}`}</span>
           </div>
         `).join("")}
       </div>
@@ -867,6 +1194,25 @@ function renderTalkOptions(stage, options) {
 function matchView() {
   const { liveMatch, nextFixture } = ui.state;
   if (!liveMatch) {
+    if (ui.postRoundSummary) {
+      return `
+        <section class="card">
+          <p class="eyebrow">${ui.language === "ru" ? "Итоги тура" : "Round recap"}</p>
+          <h2 class="section-title">${ui.language === "ru" ? "Сыгранные матчи" : "Played matches"}</h2>
+          <div class="grid">
+            ${ui.postRoundSummary.length ? ui.postRoundSummary.map((match) => `
+              <div class="split">
+                <span>${safeText(match.homeClubName, "-")} - ${safeText(match.awayClubName, "-")}</span>
+                <strong>${match.homeScore}-${match.awayScore}</strong>
+              </div>
+            `).join("") : `<p class="secondary">${t("noData")}</p>`}
+          </div>
+          <div class="action-row">
+            <button id="closePostRoundButton" class="primary-button">${ui.language === "ru" ? "Далее" : "Continue"}</button>
+          </div>
+        </section>
+      `;
+    }
     return `
       <section class="card">
         <p class="eyebrow">${t("matchCenter")}</p>
@@ -915,7 +1261,7 @@ function matchView() {
           <div class="card compact-card">
             <div class="split"><span>${t("date")}</span><strong>${formatDate(liveMatch.matchContext.matchDate)}</strong></div>
             <div class="split"><span>${t("competition")}</span><strong>${competitionLabel(liveMatch.matchContext)}</strong></div>
-            <div class="split"><span>${t("weather")}</span><strong>${ui.language === "ru" ? liveMatch.matchContext.weather.ru : liveMatch.matchContext.weather.en}, ${liveMatch.matchContext.weather.temperature}°</strong></div>
+            <div class="split"><span>${t("weather")}</span><strong>${ui.language === "ru" ? liveMatch.matchContext.weather.ru : liveMatch.matchContext.weather.en}, ${liveMatch.matchContext.weather.temperature}°C</strong></div>
             <div class="split"><span>${t("referee")}</span><strong>${liveMatch.matchContext.referee}</strong></div>
             <div class="split"><span>${t("attendance")}</span><strong>${liveMatch.matchContext.attendanceEstimate.toLocaleString(ui.language === "ru" ? "ru-RU" : "en-US")}</strong></div>
           </div>
@@ -935,9 +1281,39 @@ function matchView() {
           </div>
         </div>
         <div class="action-row">
-          <button id="quickSimButton" class="ghost-button">${t("quickSim")}</button>
+          <button id="advanceMatchButton" class="ghost-button">${t("continueMatch")}</button>
+        <button id="quickSimButton" class="ghost-button">${t("quickSim")}</button>
         </div>
         ${renderTalkOptions("pregame", liveMatch.preMatchSpeechOptions)}
+      </section>
+    `;
+  }
+
+  if (liveMatch.status === "finished") {
+    const goals = (liveMatch.events || []).filter((event) => event.type === "goal");
+    return     `
+      <section class="card">
+        <p class="eyebrow">${ui.language === "ru" ? "Матч завершен" : "Match finished"}</p>
+        <div class="match-score">
+          <div><small>${liveMatch.home.clubName}</small><div>${liveMatch.score.home}</div></div>
+          <div>FT</div>
+          <div style="text-align:right"><small>${liveMatch.away.clubName}</small><div>${liveMatch.score.away}</div></div>
+        </div>
+        <div class="grid three">
+          <article class="stat-box"><span class="secondary">${t("possession")}</span><strong>${liveMatch.stats.home.possession}% - ${liveMatch.stats.away.possession}%</strong></article>
+          <article class="stat-box"><span class="secondary">${t("shots")}</span><strong>${liveMatch.stats.home.shots} - ${liveMatch.stats.away.shots}</strong></article>
+          <article class="stat-box"><span class="secondary">${t("onTarget")}</span><strong>${liveMatch.stats.home.shotsOnTarget} - ${liveMatch.stats.away.shotsOnTarget}</strong></article>
+        </div>
+      </section>
+
+      <section class="card">
+        <p class="eyebrow">${ui.language === "ru" ? "Голы" : "Goals"}</p>
+        <div class="grid">
+          ${goals.length ? goals.map((goal) =>             `<div class="split"><span>${goal.playerName}${goal.assistName ? ` (${ui.language === "ru" ? "пас" : "assist"}: ${goal.assistName})` : ""}</span><strong>${goal.minute}'</strong></div>`          ).join("") : `<p class="secondary">${t("noData")}</p>`}
+        </div>
+        <div class="action-row">
+          <button id="continueAfterMatchButton" class="primary-button">${ui.language === "ru" ? "Далее" : "Continue"}</button>
+        </div>
       </section>
     `;
   }
@@ -1099,7 +1475,7 @@ function attachCommonEvents() {
         method: "POST",
         body: JSON.stringify({
           clubId: ui.selectedClubId,
-          managerName: document.getElementById("managerName").value || (ui.language === "ru" ? "Легендарный менеджер" : "Legacy Manager"),
+          managerName: document.getElementById("managerName").value || "Legacy Manager",
           language: ui.language,
         }),
       });
@@ -1123,9 +1499,10 @@ function moveToLineup(playerId, targetIndex) {
   }
   const displaced = ui.lineupDraft[targetIndex];
   ui.lineupDraft[targetIndex] = playerId;
-  if (displaced && displaced !== playerId) {
+  if (displaced && displaced !== playerId && !ui.poolDraft.includes(displaced)) {
     ui.poolDraft.push(displaced);
   }
+  persistSquadDraft();
 }
 
 function moveToPool(playerId) {
@@ -1136,40 +1513,109 @@ function moveToPool(playerId) {
   while (ui.lineupDraft.length < 11 && ui.poolDraft.length) {
     ui.lineupDraft.push(ui.poolDraft.shift());
   }
+  persistSquadDraft();
 }
 
-function attachDragEvents() {
-  document.querySelectorAll(".drag-player").forEach((item) => {
-    item.addEventListener("dragstart", () => {
-      ui.draggedPlayerId = Number(item.dataset.playerId);
+let squadSaveTimer = null;
+
+function persistSquadDraft(immediate = false) {
+  const run = async () => {
+    try {
+      const payload = await api("/api/tactics", {
+        method: "POST",
+        body: JSON.stringify({
+          formation: document.getElementById("formationSelect")?.value || ui.state.tactics.formation,
+          mentality: document.getElementById("mentalitySelect")?.value || ui.state.tactics.mentality,
+          style: document.getElementById("styleSelect")?.value || ui.state.tactics.style,
+          starters: ui.lineupDraft,
+          bench: ui.poolDraft.slice(0, 7),
+        }),
+      });
+      ui.state = payload.state;
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
+  };
+
+  clearTimeout(squadSaveTimer);
+  if (immediate) {
+    run();
+    return;
+  }
+  squadSaveTimer = setTimeout(run, 220);
+}
+
+function bestSlotForPlayer(playerId, forceSelected = false) {
+  if (forceSelected && Number.isInteger(ui.selectedLineupSlot)) {
+    return ui.selectedLineupSlot;
+  }
+  const player = playerById(playerId);
+  if (!player) return 0;
+  const formation = document.getElementById("formationSelect")?.value || ui.state.tactics.formation;
+  const slots = FORMATION_SLOTS[formation] || FORMATION_SLOTS["4-4-2"];
+
+  const matching = slots
+    .map((slot, index) => ({ slot, index, occupant: playerById(ui.lineupDraft[index]) }))
+    .filter((entry) => entry.slot === player.position);
+
+  const emptyMatch = matching.find((entry) => !entry.occupant);
+  if (emptyMatch) return emptyMatch.index;
+
+  const weakestMatch = matching
+    .filter((entry) => entry.occupant)
+    .sort((a, b) => (a.occupant.overall || 0) - (b.occupant.overall || 0))[0];
+  if (weakestMatch) return weakestMatch.index;
+
+  const weakestAny = ui.lineupDraft
+    .map((id, index) => ({ index, occupant: playerById(id) }))
+    .filter((entry) => entry.occupant)
+    .sort((a, b) => (a.occupant.overall || 0) - (b.occupant.overall || 0))[0];
+
+  return weakestAny ? weakestAny.index : 0;
+}
+
+function attachSquadSelectionEvents() {
+  document.querySelectorAll("[data-slot-index]").forEach((slot) => {
+    slot.addEventListener("click", () => {
+      ui.selectedLineupSlot = Number(slot.dataset.slotIndex);
+      render();
     });
   });
 
-  document.querySelectorAll("[data-drop-type]").forEach((target) => {
-    target.addEventListener("dragover", (event) => event.preventDefault());
-    target.addEventListener("drop", (event) => {
-      event.preventDefault();
-      if (!ui.draggedPlayerId) {
-        return;
-      }
-      if (target.dataset.dropType === "lineup") {
-        moveToLineup(ui.draggedPlayerId, Number(target.dataset.dropIndex));
-      } else {
-        moveToPool(ui.draggedPlayerId);
-      }
-      ui.draggedPlayerId = null;
+  document.querySelectorAll("[data-slot-pick]").forEach((button) => {
+    button.addEventListener("click", () => {
+      ui.selectedLineupSlot = Number(button.dataset.slotPick);
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-to-pool]").forEach((button) => {
+    button.addEventListener("click", () => {
+      moveToPool(Number(button.dataset.toPool));
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-to-lineup]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const playerId = Number(button.dataset.toLineup);
+      const slot = bestSlotForPlayer(playerId, true);
+      moveToLineup(playerId, slot);
+      ui.selectedLineupSlot = null;
       render();
     });
   });
 }
-
 function stopLiveTicker() {
   clearInterval(ui.liveTicker);
   ui.liveTicker = null;
 }
 
 function startLiveTicker() {
-  stopLiveTicker();
+  if (ui.liveTicker) {
+    return;
+  }
   ui.liveTicker = setInterval(async () => {
     try {
       const payload = await api("/api/match/advance", { method: "POST" });
@@ -1205,25 +1651,9 @@ async function doLoad(saveId) {
 
 function attachTabEvents() {
   if (ui.tab === "squad") {
-    attachDragEvents();
-    document.getElementById("saveTacticsButton")?.addEventListener("click", async () => {
-      try {
-        const payload = await api("/api/tactics", {
-          method: "POST",
-          body: JSON.stringify({
-            formation: document.getElementById("formationSelect").value,
-            mentality: document.getElementById("mentalitySelect").value,
-            style: document.getElementById("styleSelect").value,
-            starters: ui.lineupDraft,
-            bench: ui.poolDraft.slice(0, 7),
-          }),
-        });
-        ui.state = payload.state;
-        showToast(t("tacticsSaved"));
-        render();
-      } catch (error) {
-        showToast(error.message);
-      }
+    attachSquadSelectionEvents();
+    ["formationSelect", "mentalitySelect", "styleSelect"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("change", () => persistSquadDraft(true));
     });
   }
 
@@ -1339,17 +1769,98 @@ function attachTabEvents() {
       ui.showAllScorers = !ui.showAllScorers;
       render();
     });
+    document.querySelector("[data-toggle-europe='all']")?.addEventListener("click", () => {
+      ui.showAllEurope = true;
+      render();
+    });
+    document.querySelector("[data-toggle-europe='mine']")?.addEventListener("click", () => {
+      ui.showAllEurope = false;
+      render();
+    });
+    document.querySelector("[data-toggle-europe-details='all']")?.addEventListener("click", () => {
+      ui.showAllEuropeDetails = true;
+      render();
+    });
+    document.querySelector("[data-toggle-europe-details='mine']")?.addEventListener("click", () => {
+      ui.showAllEuropeDetails = false;
+      render();
+    });
+    document.querySelector("[data-toggle-cups='all']")?.addEventListener("click", () => {
+      ui.showAllCups = true;
+      render();
+    });
+    document.querySelector("[data-toggle-cups='mine']")?.addEventListener("click", () => {
+      ui.showAllCups = false;
+      render();
+    });
   }
-
   if (ui.tab === "match") {
+    ["liveFormationSelect", "liveMentalitySelect", "liveStyleSelect", "subOutSelect", "subInSelect"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) {
+        return;
+      }
+      el.addEventListener("focus", () => stopLiveTicker());
+      el.addEventListener("click", () => stopLiveTicker());
+      el.addEventListener("change", () => stopLiveTicker());
+    });
     document.getElementById("startMatchButton")?.addEventListener("click", async () => {
       try {
         const payload = await api("/api/match/start", { method: "POST" });
         ui.state = payload.state;
+        ui.postRoundSummary = null;
         render();
       } catch (error) {
         showToast(error.message);
       }
+    });
+
+    document.getElementById("advanceMatchButton")?.addEventListener("click", async () => {
+      try {
+        if (ui.state.liveMatch?.status === "live") {
+          const payload = await api("/api/match/advance", { method: "POST" });
+          ui.state = payload.state;
+        } else {
+          const payload = await api("/api/match/action", {
+            method: "POST",
+            body: JSON.stringify({ type: "resume", stage: ui.state.liveMatch?.status || "pregame" }),
+          });
+          ui.state = payload.state;
+        }
+        render();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+
+    document.getElementById("continueAfterMatchButton")?.addEventListener("click", async () => {
+      try {
+        const finished = ui.state.liveMatch;
+        const finishedMatchContext = finished?.matchContext || null;
+        const finishedFallback = finished
+          ? [{
+            homeClubName: finished.home?.clubName || "-",
+            awayClubName: finished.away?.clubName || "-",
+            homeScore: finished.score?.home ?? 0,
+            awayScore: finished.score?.away ?? 0,
+          }]
+          : [];
+        const payload = await api("/api/match/continue", { method: "POST" });
+        ui.state = payload.state;
+        ui.postRoundSummary = buildPostRoundSummary(payload.state.roundSummary || [], ui.state.club, finishedMatchContext);
+        if (!ui.postRoundSummary.length && finishedFallback.length) {
+          ui.postRoundSummary = finishedFallback;
+        }
+        render();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+
+    document.getElementById("closePostRoundButton")?.addEventListener("click", () => {
+      ui.postRoundSummary = null;
+      ui.tab = "dashboard";
+      render();
     });
 
     document.getElementById("quickSimButton")?.addEventListener("click", async () => {
@@ -1378,9 +1889,6 @@ function attachTabEvents() {
           ui.state = payload.state;
           showToast(t("speechDone"));
           render();
-          if (ui.state.liveMatch?.status === "live") {
-            startLiveTicker();
-          }
         } catch (error) {
           showToast(error.message);
         }
@@ -1396,9 +1904,6 @@ function attachTabEvents() {
           });
           ui.state = payload.state;
           render();
-          if (ui.state.liveMatch?.status === "live") {
-            startLiveTicker();
-          }
         } catch (error) {
           showToast(error.message);
         }
@@ -1419,9 +1924,6 @@ function attachTabEvents() {
         });
         ui.state = payload.state;
         render();
-        if (ui.state.liveMatch?.status === "live") {
-          startLiveTicker();
-        }
       } catch (error) {
         showToast(error.message);
       }
@@ -1441,9 +1943,6 @@ function attachTabEvents() {
         ui.state = payload.state;
         showToast(t("substitutionDone"));
         render();
-        if (ui.state.liveMatch?.status === "live") {
-          startLiveTicker();
-        }
       } catch (error) {
         showToast(error.message);
       }
@@ -1467,6 +1966,14 @@ function renderTabs() {
   });
 }
 
+function syncLiveTickerState() {
+  if (ui.tab === "match" && ui.state?.liveMatch?.status === "live") {
+    startLiveTicker();
+    return;
+  }
+  stopLiveTicker();
+}
+
 function renderGame() {
   const views = {
     dashboard: dashboardView,
@@ -1481,6 +1988,7 @@ function renderGame() {
   attachToolbarEvents();
   attachCommonEvents();
   attachTabEvents();
+  syncLiveTickerState();
 }
 
 function render() {
@@ -1511,3 +2019,78 @@ refreshButton.textContent = t("refresh");
 loadState().catch((error) => {
   app.innerHTML = `<section class="loading-card"><p>${error.message}</p></section>`;
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

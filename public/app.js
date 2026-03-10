@@ -78,6 +78,7 @@ const I18N = {
     saveNamePrompt: "Название сохранения",
     noActiveSave: "Выбери сохранение из списка",
     created: "Карьера создана",
+    creatingCareer: "Стартуем новую карьеру...",
     tacticsSaved: "Тактика сохранена",
     ticketSaved: "Цена билета обновлена",
     stadiumUpgraded: "Стадион расширен",
@@ -185,6 +186,7 @@ const I18N = {
     saveNamePrompt: "Save name",
     noActiveSave: "Choose a save slot first",
     created: "Career created",
+    creatingCareer: "Starting a new career...",
     tacticsSaved: "Tactics saved",
     ticketSaved: "Ticket price updated",
     stadiumUpgraded: "Stadium expanded",
@@ -282,6 +284,7 @@ const ui = {
   showAllEuropeDetails: false,
   showAllCups: false,
   selectedLineupSlot: null,
+  startingCareer: false,
 };
 
 function t(key) {
@@ -647,12 +650,13 @@ function renderSetup() {
     ${toolbarView()}
     <section class="setup-card">
       <p class="eyebrow">${t("newCareer")}</p>
+      ${ui.startingCareer ? `<div class="inline-status-banner">${t("creatingCareer")}</div>` : ""}
       <h2 class="section-title">${t("chooseLeague")}</h2>
       <div class="league-grid">
         ${leagueKeys.map((leagueKey) => {
           const [country, name] = leagueKey.split("__");
           return `
-            <button class="league-card ${ui.selectedLeague === leagueKey ? "active" : ""}" data-league-key="${leagueKey}">
+            <button class="league-card ${ui.selectedLeague === leagueKey ? "active" : ""}" data-league-key="${leagueKey}" ${ui.startingCareer ? "disabled" : ""}>
               <strong>${country}</strong>
               <span>${name}</span>
             </button>
@@ -662,7 +666,7 @@ function renderSetup() {
       <h2 class="section-title" style="margin-top:14px">${t("chooseClub")}</h2>
       <div class="club-card-grid">
         ${teams.map((club) => `
-          <button class="club-selection-card ${ui.selectedClubId === club.id ? "active" : ""}" data-club-id="${club.id}">
+          <button class="club-selection-card ${ui.selectedClubId === club.id ? "active" : ""}" data-club-id="${club.id}" ${ui.startingCareer ? "disabled" : ""}>
             <div class="cluster">
               ${badge(club.name, club.logoPrimary, club.logoSecondary)}
               <div>
@@ -676,10 +680,10 @@ function renderSetup() {
       </div>
       <div class="field" style="margin-top:16px">
         <label>${t("managerName")}</label>
-        <input id="managerName" value="Legacy Manager" />
+        <input id="managerName" value="Legacy Manager" ${ui.startingCareer ? "disabled" : ""} />
       </div>
       <div class="action-row">
-        <button id="startCareerButton" class="primary-button">${t("startCareer")}</button>
+        <button id="startCareerButton" class="primary-button" ${ui.startingCareer ? "disabled" : ""}>${ui.startingCareer ? t("creatingCareer") : t("startCareer")}</button>
       </div>
       ${(ui.state.saveSlots || []).length ? `
         <section class="card compact-card">
@@ -688,7 +692,7 @@ function renderSetup() {
             ${ui.state.saveSlots.map((slot) => `
               <div class="split">
                 <span>${slot.name}</span>
-                <button class="mini-button" data-load-slot="${slot.id}">${t("load")}</button>
+                <button class="mini-button" data-load-slot="${slot.id}" ${ui.startingCareer ? "disabled" : ""}>${t("load")}</button>
               </div>
             `).join("")}
           </div>
@@ -701,6 +705,13 @@ function renderSetup() {
 function dashboardView() {
   const { club, manager, board, nextFixture, roundSummary } = ui.state;
   const leagueOnlySummary = (roundSummary || []).filter((match) => !match.competitionName || match.competitionName === club.leagueName);
+  const boardFallback = manager.jobStatus !== "active"
+    ? (ui.language === "ru"
+        ? "Совет директоров уволил тебя. Начни новую карьеру или загрузи более раннее сохранение."
+        : "The board has dismissed you. Start a new career or load an earlier save.")
+    : (ui.language === "ru"
+        ? "Совет директоров ожидает стабильные результаты."
+        : "The board expects stable results.");
   return `
     <section class="hero-card" style="background:linear-gradient(135deg, ${club.logoPrimary}, ${club.logoSecondary})">
       <div class="hero-top">
@@ -721,7 +732,7 @@ function dashboardView() {
           <div style="font-size:34px;font-family:'Barlow Condensed',sans-serif">${manager.boardConfidence}</div>
         </div>
       </div>
-      <p>${safeText(board.message, ui.language === "ru" ? "Совет директоров ожидает стабильные результаты." : "The board expects stable results.")}</p>
+      <p>${safeText(board.message, boardFallback)}</p>
     </section>
 
     <section class="grid three">
@@ -1480,21 +1491,30 @@ function attachCommonEvents() {
   });
 
   document.getElementById("startCareerButton")?.addEventListener("click", async () => {
+    if (ui.startingCareer) {
+      return;
+    }
+    const managerName = document.getElementById("managerName").value || "Legacy Manager";
+    ui.startingCareer = true;
+    render();
     try {
       const payload = await api("/api/new-game", {
         method: "POST",
         body: JSON.stringify({
           clubId: ui.selectedClubId,
-          managerName: document.getElementById("managerName").value || "Legacy Manager",
+          managerName,
           language: ui.language,
         }),
       });
+      ui.startingCareer = false;
       ui.state = payload.state;
       syncLanguageFromState();
       ui.tab = "dashboard";
       showToast(t("created"));
       render();
     } catch (error) {
+      ui.startingCareer = false;
+      render();
       showToast(error.message);
     }
   });

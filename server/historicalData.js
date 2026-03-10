@@ -1,8 +1,13 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const cheerio = require("cheerio");
 
-const CACHE_DIR = path.join(__dirname, "..", ".cache", "historical");
+const CACHE_DIR = process.env.HISTORICAL_CACHE_DIR
+  ? path.resolve(process.env.HISTORICAL_CACHE_DIR)
+  : (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME)
+    ? path.join(os.tmpdir(), "fm-historical-cache")
+    : path.join(__dirname, "..", ".cache", "historical");
 const SEASON_LABEL = "2007-08";
 
 const COMPETITIONS = [
@@ -170,7 +175,12 @@ function colorPairFromName(name) {
 }
 
 function ensureCacheDir() {
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    return true;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function cachePathFor(url) {
@@ -179,9 +189,9 @@ function cachePathFor(url) {
 }
 
 async function fetchText(url) {
-  ensureCacheDir();
-  const cached = cachePathFor(url);
-  if (fs.existsSync(cached)) {
+  const canUseCache = ensureCacheDir();
+  const cached = canUseCache ? cachePathFor(url) : null;
+  if (cached && fs.existsSync(cached)) {
     return fs.readFileSync(cached, "utf8");
   }
 
@@ -196,7 +206,13 @@ async function fetchText(url) {
   }
 
   const text = await response.text();
-  fs.writeFileSync(cached, text, "utf8");
+  if (cached) {
+    try {
+      fs.writeFileSync(cached, text, "utf8");
+    } catch (_error) {
+      // Ignore cache write failures in read-only/serverless environments.
+    }
+  }
   return text;
 }
 

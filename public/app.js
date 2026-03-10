@@ -538,7 +538,17 @@ async function api(url, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const payload = await response.json();
+  const rawText = await response.text();
+  let payload = null;
+  try {
+    payload = rawText ? JSON.parse(rawText) : null;
+  } catch (_error) {
+    const fallbackMessage = rawText?.slice(0, 220) || "Server returned non-JSON response";
+    throw new Error(ui.language === "ru" ? `Ошибка сервера: ${fallbackMessage}` : `Server error: ${fallbackMessage}`);
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error(ui.language === "ru" ? "Некорректный ответ сервера" : "Invalid server response");
+  }
   if (!payload.ok) {
     throw new Error(payload.error || (ui.language === "ru" ? "Ошибка запроса" : "Request failed"));
   }

@@ -1,4 +1,6 @@
-﻿const path = require("path");
+﻿const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const Database = require("better-sqlite3");
 const { importHistoricalSeason, SEASON_LABEL, clamp } = require("./historicalData");
 const { REFEREES, buildSpeechOptions, generateWeather } = require("./content");
@@ -15,7 +17,17 @@ const {
 } = require("./matchEngine");
 
 const DB_PATH = path.join(__dirname, "..", "data.sqlite");
-const db = new Database(DB_PATH);
+const RUNTIME_DB_PATH = process.env.VERCEL
+  ? path.join(os.tmpdir(), "data.sqlite")
+  : DB_PATH;
+
+if (process.env.VERCEL && !fs.existsSync(RUNTIME_DB_PATH)) {
+  if (fs.existsSync(DB_PATH)) {
+    fs.copyFileSync(DB_PATH, RUNTIME_DB_PATH);
+  }
+}
+
+const db = new Database(RUNTIME_DB_PATH);
 const KNOCKOUT_STAGE_SEQUENCE = ["Round of 16", "Quarter-final", "Semi-final", "Final"];
 const LEGACY_KNOCKOUT_STAGE_ALIASES = {
   "1/8 Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРІР‚СњР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В»Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°": "Round of 16",
@@ -124,7 +136,7 @@ function ensureColumn(tableName, columnName, definition) {
 }
 
 function createSchema() {
-  db.pragma("journal_mode = WAL");
+  db.pragma(process.env.VERCEL ? "journal_mode = DELETE" : "journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
@@ -2752,6 +2764,9 @@ module.exports = {
   continueAfterMatch,
   handleLiveAction,
 };
+
+
+
 
 
 

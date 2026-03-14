@@ -569,10 +569,24 @@ th {
   font-size: 24px;
 }
 
- .squad-layout {
+.squad-layout {
   display: grid;
   grid-template-columns: 1.2fr 0.8fr;
   gap: 14px;
+}
+
+.compact-mobile-squad .compact-card {
+  padding: 12px;
+}
+
+.compact-mobile-squad .lineup-unit-grid,
+.compact-mobile-squad .drag-pool {
+  gap: 6px;
+}
+
+.compact-mobile-squad .squad-slot,
+.compact-mobile-squad .drag-player {
+  padding: 10px;
 }
 
 .drag-pool {

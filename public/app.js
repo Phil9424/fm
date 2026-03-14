@@ -655,17 +655,34 @@ function ensureDraft() {
   if (!ui.state?.tactics) {
     return;
   }
-  const key = `${ui.state.club.id}-${ui.state.tactics.starters.map((player) => player.id).join(",")}-${ui.state.tactics.bench.map((player) => player.id).join(",")}`;
+  const tactics = tacticsState();
+  const key = `${ui.state?.club?.id || "club"}-${tactics.starters.map((player) => player.id).join(",")}-${tactics.bench.map((player) => player.id).join(",")}`;
   if (ui.draftKey === key) {
     return;
   }
   ui.draftKey = key;
-  ui.lineupDraft = ui.state.tactics.starters.map((player) => player.id);
-  ui.poolDraft = [...ui.state.tactics.bench, ...ui.state.tactics.reserves].map((player) => player.id);
+  ui.lineupDraft = tactics.starters.map((player) => player.id);
+  ui.poolDraft = [...tactics.bench, ...tactics.reserves].map((player) => player.id);
+}
+
+function tacticsState() {
+  const tactics = ui.state?.tactics || {};
+  return {
+    formation: tactics.formation || "4-4-2",
+    mentality: tactics.mentality || "balanced",
+    style: tactics.style || "balanced",
+    formations: Array.isArray(tactics.formations) && tactics.formations.length ? tactics.formations : ["4-4-2", "4-3-3"],
+    mentalities: Array.isArray(tactics.mentalities) && tactics.mentalities.length ? tactics.mentalities : ["balanced"],
+    styles: Array.isArray(tactics.styles) && tactics.styles.length ? tactics.styles : ["balanced"],
+    starters: Array.isArray(tactics.starters) ? tactics.starters : [],
+    bench: Array.isArray(tactics.bench) ? tactics.bench : [],
+    reserves: Array.isArray(tactics.reserves) ? tactics.reserves : [],
+  };
 }
 
 function allSquadPlayers() {
-  return [...ui.state.tactics.starters, ...ui.state.tactics.bench, ...ui.state.tactics.reserves];
+  const tactics = tacticsState();
+  return [...tactics.starters, ...tactics.bench, ...tactics.reserves];
 }
 
 function playerById(id) {
@@ -677,7 +694,7 @@ function moraleText(player) {
 }
 
 function playerSummaryLine(player) {
-  return `${player.position} - ${player.overall} • ${moraleText(player)}`;
+  return `${player?.position || "-"} - ${player?.overall ?? 0} • ${moraleText(player)}`;
 }
 
 async function changeLanguage(language) {
@@ -883,8 +900,10 @@ function dashboardView() {
 
 function squadView() {
   ensureDraft();
+  const tactics = tacticsState();
   const poolPlayers = ui.poolDraft.map(playerById).filter(Boolean);
-  const formationSlots = FORMATION_SLOTS[ui.state.tactics.formation] || FORMATION_SLOTS["4-4-2"];
+  const formationSlots = FORMATION_SLOTS[tactics.formation] || FORMATION_SLOTS["4-4-2"];
+  const compactSquad = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(max-width: 760px)").matches;
   const lineupSections = [
     { code: "G", label: ui.language === "ru" ? "Вратарь" : "Goalkeeper" },
     { code: "D", label: ui.language === "ru" ? "Защита" : "Defenders" },
@@ -892,83 +911,92 @@ function squadView() {
     { code: "F", label: ui.language === "ru" ? "Нападение" : "Forwards" },
   ];
 
+  if (!tactics.starters.length && !tactics.bench.length && !tactics.reserves.length) {
+    return `
+      <section class="card">
+        <p class="eyebrow">${t("squad")}</p>
+        <div class="inline-alert">${ui.language === "ru" ? "Состав пока не загрузился. Обнови страницу и попробуй снова." : "Squad data has not loaded yet. Refresh the page and try again."}</div>
+      </section>
+    `;
+  }
+
+  const lineupMarkup = lineupSections.map((section) => {
+    const indexes = formationSlots
+      .map((slot, index) => ({ slot, index }))
+      .filter((entry) => entry.slot === section.code)
+      .map((entry) => entry.index);
+
+    if (!indexes.length) {
+      return "";
+    }
+
+    return `
+      <div class="lineup-unit">
+        <div class="lineup-unit-title">${section.label} (${indexes.length})</div>
+        <div class="lineup-unit-grid">
+          ${indexes.map((index) => {
+            const player = playerById(ui.lineupDraft[index]);
+            const selected = ui.selectedLineupSlot === index ? "slot-selected" : "";
+            const slotCode = formationSlots[index];
+            return `
+              <div class="squad-slot ${selected}" data-slot-index="${index}">
+                <div>
+                  <strong>${ui.language === "ru" ? `Слот ${index + 1}` : `Slot ${index + 1}`}</strong>
+                  <div class="secondary">${slotCode}</div>
+                </div>
+                ${player
+                  ? `<div><strong>${player.name}</strong><div class="secondary">${playerSummaryLine(player)}</div></div>`
+                  : `<div class="drag-placeholder">${ui.language === "ru" ? "Пусто" : "Empty"}</div>`}
+                <div class="action-row">
+                  <button type="button" class="mini-button" data-slot-pick="${index}">${ui.language === "ru" ? "Выбрать" : "Pick"}</button>
+                  ${player ? `<button type="button" class="mini-button" data-to-pool="${player.id}">${ui.language === "ru" ? "Снять" : "Out"}</button>` : ""}
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  const poolMarkup = poolPlayers.map((player) => `
+    <div class="drag-player">
+      <div><strong>${player.name}</strong><span>${playerSummaryLine(player)}</span></div>
+      <div class="action-row">
+        <button type="button" class="mini-button" data-to-lineup="${player.id}">${ui.language === "ru" ? "В состав" : "To lineup"}</button>
+      </div>
+    </div>
+  `).join("");
+
   return `
     <section class="card">
       <p class="eyebrow">${t("tactics")}</p>
       <div class="grid two">
         <div class="field">
           <label>${t("formation")}</label>
-          <select id="formationSelect">${ui.state.tactics.formations.map((formation) => `<option ${formation === ui.state.tactics.formation ? "selected" : ""}>${formation}</option>`).join("")}</select>
+          <select id="formationSelect">${tactics.formations.map((formation) => `<option ${formation === tactics.formation ? "selected" : ""}>${formation}</option>`).join("")}</select>
         </div>
         <div class="field">
           <label>${t("mentality")}</label>
-          <select id="mentalitySelect">${ui.state.tactics.mentalities.map((option) => `<option value="${option}" ${option === ui.state.tactics.mentality ? "selected" : ""}>${labelFor("mentality", option)}</option>`).join("")}</select>
+          <select id="mentalitySelect">${tactics.mentalities.map((option) => `<option value="${option}" ${option === tactics.mentality ? "selected" : ""}>${labelFor("mentality", option)}</option>`).join("")}</select>
         </div>
       </div>
       <div class="field">
         <label>${t("style")}</label>
-        <select id="styleSelect">${ui.state.tactics.styles.map((option) => `<option value="${option}" ${option === ui.state.tactics.style ? "selected" : ""}>${labelFor("style", option)}</option>`).join("")}</select>
+        <select id="styleSelect">${tactics.styles.map((option) => `<option value="${option}" ${option === tactics.style ? "selected" : ""}>${labelFor("style", option)}</option>`).join("")}</select>
       </div>
       <div class="split">
         <span class="secondary">${ui.language === "ru" ? "Нажми на слот, затем выбери игрока ниже." : "Tap a slot, then choose a player below."}</span>
         <strong>${ui.language === "ru" ? "Автосохранение включено" : "Auto-save is on"}</strong>
       </div>
-      <div class="squad-layout">
+      <div class="squad-layout ${compactSquad ? "compact-mobile-squad" : ""}">
         <div class="card compact-card">
           <p class="eyebrow">${t("yourTeam")}</p>
-          <div class="grouped-slots">
-            ${lineupSections.map((section) => {
-              const indexes = formationSlots
-                .map((slot, index) => ({ slot, index }))
-                .filter((entry) => entry.slot === section.code)
-                .map((entry) => entry.index);
-
-              if (!indexes.length) {
-                return "";
-              }
-
-              return `
-                <div class="lineup-unit">
-                  <div class="lineup-unit-title">${section.label} (${indexes.length})</div>
-                  <div class="lineup-unit-grid">
-                    ${indexes.map((index) => {
-                      const player = playerById(ui.lineupDraft[index]);
-                      const selected = ui.selectedLineupSlot === index ? "slot-selected" : "";
-                      const slotCode = formationSlots[index];
-                      return `
-                        <div class="squad-slot ${selected}" data-slot-index="${index}">
-                          <div>
-                            <strong>${ui.language === "ru" ? `Слот ${index + 1}` : `Slot ${index + 1}`}</strong>
-                            <div class="secondary">${slotCode}</div>
-                          </div>
-                          ${player
-                            ? `<div><strong>${player.name}</strong><div class="secondary">${playerSummaryLine(player)}</div></div>`
-                            : `<div class="drag-placeholder">${ui.language === "ru" ? "Пусто" : "Empty"}</div>`}
-                          <div class="action-row">
-                            <button type="button" class="mini-button" data-slot-pick="${index}">${ui.language === "ru" ? "Выбрать" : "Pick"}</button>
-                            ${player ? `<button type="button" class="mini-button" data-to-pool="${player.id}">${ui.language === "ru" ? "Снять" : "Out"}</button>` : ""}
-                          </div>
-                        </div>
-                      `;
-                    }).join("")}
-                  </div>
-                </div>
-              `;
-            }).join("")}
-          </div>
+          <div class="grouped-slots">${lineupMarkup}</div>
         </div>
         <div class="card compact-card">
           <p class="eyebrow">${t("benchAndReserves")}</p>
-          <div class="drag-pool">
-            ${poolPlayers.map((player) => `
-              <div class="drag-player">
-                <div><strong>${player.name}</strong><span>${playerSummaryLine(player)}</span></div>
-                <div class="action-row">
-                  <button type="button" class="mini-button" data-to-lineup="${player.id}">${ui.language === "ru" ? "В состав" : "To lineup"}</button>
-                </div>
-              </div>
-            `).join("")}
-          </div>
+          <div class="drag-pool">${poolMarkup}</div>
         </div>
       </div>
     </section>
@@ -1938,6 +1966,9 @@ function bestSlotForPlayer(playerId, forceSelected = false) {
 }
 
 function attachSquadSelectionEvents() {
+  if (!ui.state?.tactics) {
+    return;
+  }
   document.querySelectorAll("[data-slot-index]").forEach((slot) => {
     slot.addEventListener("click", () => {
       const clicked = Number(slot.dataset.slotIndex);
@@ -1956,21 +1987,24 @@ function attachSquadSelectionEvents() {
     });
   });
   document.querySelectorAll("[data-slot-pick]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
       ui.selectedLineupSlot = Number(button.dataset.slotPick);
       render();
     });
   });
 
   document.querySelectorAll("[data-to-pool]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
       moveToPool(Number(button.dataset.toPool));
       render();
     });
   });
 
   document.querySelectorAll("[data-to-lineup]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
       const playerId = Number(button.dataset.toLineup);
       const slot = bestSlotForPlayer(playerId, true);
       moveToLineup(playerId, slot);
@@ -2374,7 +2408,18 @@ function renderGame() {
     mail: mailView,
     match: matchView,
   };
-  app.innerHTML = `${toolbarView()}${views[ui.tab]()}`;
+  try {
+    app.innerHTML = `${toolbarView()}${views[ui.tab]()}`;
+  } catch (error) {
+    console.error("Render failed", error);
+    app.innerHTML = `
+      ${toolbarView()}
+      <section class="card">
+        <p class="eyebrow">UI</p>
+        <div class="inline-alert">${ui.language === "ru" ? "Этот экран не открылся. Обнови страницу и попробуй снова." : "This screen failed to open. Refresh and try again."}</div>
+      </section>
+    `;
+  }
   renderTabs();
   attachToolbarEvents();
   attachCommonEvents();

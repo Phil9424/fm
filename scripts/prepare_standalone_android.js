@@ -8,6 +8,7 @@ const serverDir = path.join(rootDir, "server");
 const standaloneDir = path.join(rootDir, "standalone-node");
 const publicNodeModulesDir = path.join(publicDir, "node_modules");
 const publicServerDir = path.join(publicDir, "server");
+const sourceDbPath = path.join(rootDir, "data.sqlite");
 const seedDbPath = path.join(publicDir, "seed-data.sqlite");
 
 function copyRecursive(source, destination) {
@@ -50,15 +51,33 @@ function installStandaloneDependencies() {
 }
 
 function buildSeedDatabase() {
+  const Database = require("better-sqlite3");
+
+  if (!fs.existsSync(sourceDbPath)) {
+    throw new Error(`Source database not found: ${sourceDbPath}`);
+  }
+
   removeIfExists(seedDbPath);
-  run(process.execPath, [path.join(serverDir, "index.js"), "--seed-only"], {
-    env: {
-      ...process.env,
-      LFM_DB_ASSET_PATH: seedDbPath,
-      LFM_DB_PATH: seedDbPath,
-      HISTORICAL_CACHE_DIR: path.join(rootDir, ".cache", "historical-standalone"),
-    },
-  });
+  fs.copyFileSync(sourceDbPath, seedDbPath);
+
+  const db = new Database(seedDbPath);
+  db.exec(`
+    DELETE FROM live_match;
+    DELETE FROM transfer_offers;
+    DELETE FROM finance_entries;
+    DELETE FROM news_items;
+    DELETE FROM manager_mail;
+    DELETE FROM transfer_market;
+    DELETE FROM fixtures;
+    DELETE FROM club_tactics;
+    DELETE FROM players;
+    DELETE FROM clubs;
+    DELETE FROM leagues;
+    DELETE FROM manager;
+    DELETE FROM save_slots;
+    VACUUM;
+  `);
+  db.close();
 }
 
 function main() {

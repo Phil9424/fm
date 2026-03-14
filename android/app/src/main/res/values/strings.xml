@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Legacy FM 07/08</string>
+    <string name="title_activity_main">Legacy FM 07/08</string>
+    <string name="package_name">com.phil9424.lfm0708</string>
+    <string name="custom_url_scheme">com.phil9424.lfm0708</string>
+</resources>

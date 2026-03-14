@@ -1,0 +1,10 @@
+{
+  "appId": "com.phil9424.lfm0708",
+  "appName": "Legacy FM 07/08",
+  "webDir": "public",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": true
+  }
+}

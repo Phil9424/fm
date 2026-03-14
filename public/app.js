@@ -128,6 +128,10 @@ const I18N = {
     keyMoment: "Ключевой эпизод",
     primaryChoice: "Решение",
     secondaryChoice: "Сила/вариант",
+    serverUrl: "Адрес сервера",
+    saveServerUrl: "Сохранить адрес",
+    serverRequired: "Для Android-приложения нужен адрес сервера игры",
+    serverSaved: "Адрес сервера сохранен",
   },
   en: {
     refresh: "Refresh",
@@ -253,6 +257,10 @@ const I18N = {
     keyMoment: "Key moment",
     primaryChoice: "Decision",
     secondaryChoice: "Power/variant",
+    serverUrl: "Server URL",
+    saveServerUrl: "Save server URL",
+    serverRequired: "The Android app needs the game server URL",
+    serverSaved: "Server URL saved",
   },
 };
 
@@ -320,6 +328,7 @@ const ui = {
   selectedLineupSlot: null,
   startingCareer: false,
   managerNameDraft: localStorage.getItem("lfm-manager-name") || "Legacy Manager",
+  apiBase: localStorage.getItem("lfm-api-base") || "",
 };
 
 function t(key) {
@@ -611,8 +620,29 @@ function syncLanguageFromState() {
   refreshButton.textContent = t("refresh");
 }
 
+function normalizedApiBase() {
+  return String(ui.apiBase || "").trim().replace(/\/+$/, "");
+}
+
+function isNativeShell() {
+  return window.location.protocol === "capacitor:" || window.location.protocol === "file:";
+}
+
+function resolveApiUrl(url) {
+  if (/^https?:\/\//i.test(url)) {
+    return url;
+  }
+  const base = normalizedApiBase();
+  return base ? `${base}${url}` : url;
+}
+
+function saveApiBase(value) {
+  ui.apiBase = String(value || "").trim().replace(/\/+$/, "");
+  localStorage.setItem("lfm-api-base", ui.apiBase);
+}
+
 async function api(url, options = {}) {
-  const response = await fetch(url, {
+  const response = await fetch(resolveApiUrl(url), {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
@@ -724,6 +754,7 @@ function toolbarView() {
             <option value="ru" ${ui.language === "ru" ? "selected" : ""}>RU</option>
             <option value="en" ${ui.language === "en" ? "selected" : ""}>EN</option>
           </select>
+          ${isNativeShell() ? `<button class="mini-button" id="serverButton">URL</button>` : ""}
           <button class="mini-button" id="saveButton">${t("save")}</button>
           <select id="saveSelect">
             <option value="">${t("load")}</option>
@@ -1001,6 +1032,36 @@ function squadView() {
       </div>
     </section>
   `;
+}
+
+function renderServerSetup(message = "") {
+  bottomNav.classList.add("hidden");
+  app.innerHTML = `
+    ${toolbarView()}
+    <section class="setup-card">
+      <p class="eyebrow">Android</p>
+      <h2 class="section-title">${t("serverRequired")}</h2>
+      <div class="field">
+        <label>${t("serverUrl")}</label>
+        <input id="serverUrlInput" value="${normalizedApiBase()}" placeholder="https://your-project.vercel.app" />
+      </div>
+      ${message ? `<div class="inline-alert">${message}</div>` : ""}
+      <div class="action-row">
+        <button id="saveServerButton" class="primary-button">${t("saveServerUrl")}</button>
+      </div>
+    </section>
+  `;
+  attachToolbarEvents();
+  document.getElementById("saveServerButton")?.addEventListener("click", () => {
+    const value = document.getElementById("serverUrlInput")?.value || "";
+    if (!/^https?:\/\//i.test(value)) {
+      showToast(ui.language === "ru" ? "Укажи полный адрес, начиная с https://" : "Enter a full URL starting with https://");
+      return;
+    }
+    saveApiBase(value);
+    showToast(t("serverSaved"));
+    loadState().catch((error) => renderServerSetup(error.message));
+  });
 }
 function transfersView() {
   const windowOpen = !!ui.state.transferWindowOpen;
@@ -1744,6 +1805,10 @@ function attachToolbarEvents() {
     changeLanguage(event.target.value).catch((error) => showToast(error.message));
   });
 
+  document.getElementById("serverButton")?.addEventListener("click", () => {
+    renderServerSetup();
+  });
+
   document.getElementById("saveButton")?.addEventListener("click", async () => {
     const name = window.prompt(t("saveNamePrompt"), `${t("round")} ${ui.state?.manager?.currentRound || 1}`);
     if (!name) {
@@ -2452,9 +2517,17 @@ bottomNav.addEventListener("click", (event) => {
 refreshButton.addEventListener("click", loadState);
 refreshButton.textContent = t("refresh");
 
-loadState().catch((error) => {
-  app.innerHTML = `<section class="loading-card"><p>${error.message}</p></section>`;
-});
+if (isNativeShell() && !normalizedApiBase()) {
+  renderServerSetup();
+} else {
+  loadState().catch((error) => {
+    if (isNativeShell()) {
+      renderServerSetup(error.message);
+      return;
+    }
+    app.innerHTML = `<section class="loading-card"><p>${error.message}</p></section>`;
+  });
+}
 
 
 

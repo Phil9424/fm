@@ -1,0 +1,19 @@
+{
+  "name": "Legacy Football Manager 07/08",
+  "short_name": "LFM 07/08",
+  "description": "\u0424\u0443\u0442\u0431\u043e\u043b\u044c\u043d\u044b\u0439 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0435\u0437\u043e\u043d\u0430 2007/08 \u0441 \u043c\u043e\u0431\u0438\u043b\u044c\u043d\u044b\u043c \u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441\u043e\u043c.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a2233",
+  "theme_color": "#1a2233",
+  "lang": "ru",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

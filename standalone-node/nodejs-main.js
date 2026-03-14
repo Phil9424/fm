@@ -1,11 +1,6 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-try {
-  require("bridge");
-} catch (_error) {
-  // Desktop verification can run without the native Capacitor bridge.
-}
 
 const appRoot = __dirname;
 const dataDir = path.join(appRoot, "_runtime");

@@ -1,0 +1,14 @@
+{
+  "name": "lfm-standalone-node",
+  "version": "1.0.0",
+  "description": "Standalone Node runtime for Legacy FM 07/08 Android build",
+  "main": "nodejs-main.js",
+  "private": true,
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "sql.js": "^1.14.1"
+  }
+}

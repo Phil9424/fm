@@ -3,3 +3,14 @@ node_modules/
 data.sqlite
 data.sqlite-shm
 data.sqlite-wal
+public/node_modules/
+public/server/
+public/package.json
+public/nodejs-main.js
+public/seed-data.sqlite
+public/seed-data.sqlite-shm
+public/seed-data.sqlite-wal
+public/_runtime/
+package/
+capacitor-nodejs-0.0.1.tgz
+tmp-standalone-*.log

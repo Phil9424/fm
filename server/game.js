@@ -16,18 +16,14 @@ const {
   applyMatchAction,
 } = require("./matchEngine");
 
-const DB_PATH = path.join(__dirname, "..", "data.sqlite");
-const RUNTIME_DB_PATH = process.env.VERCEL
-  ? path.join(os.tmpdir(), "data.sqlite")
-  : DB_PATH;
-
-if (process.env.VERCEL && !fs.existsSync(RUNTIME_DB_PATH)) {
-  if (fs.existsSync(DB_PATH)) {
-    fs.copyFileSync(DB_PATH, RUNTIME_DB_PATH);
-  }
-}
-
-const db = new Database(RUNTIME_DB_PATH);
+const DEFAULT_DB_PATH = path.join(__dirname, "..", "data.sqlite");
+const DB_ASSET_PATH = process.env.LFM_DB_ASSET_PATH || DEFAULT_DB_PATH;
+const RUNTIME_DB_PATH = process.env.LFM_DB_PATH
+  || (process.env.VERCEL
+    ? path.join(os.tmpdir(), "data.sqlite")
+    : DEFAULT_DB_PATH);
+let db = null;
+let dbReadyPromise = null;
 const HISTORICAL_SEED_VERSION = "5";
 const KNOCKOUT_STAGE_SEQUENCE = ["Round of 16", "Quarter-final", "Semi-final", "Final"];
 const LEGACY_KNOCKOUT_STAGE_ALIASES = {
@@ -50,6 +46,40 @@ const FIRST_SEASON_UEFA_NAMES = [
   "Galatasaray", "Anderlecht", "Hajduk Split", "Heerenveen", "AZ Alkmaar", "Club Brugge", "Copenhagen", "Basel",
   "Rennes", "PSG", "Sampdoria", "Udinese", "Nantes", "Rapid Wien", "Partizan", "Lech Poznan"
 ];
+
+function ensureDatabaseFile() {
+  if (DB_ASSET_PATH === RUNTIME_DB_PATH) {
+    fs.mkdirSync(path.dirname(RUNTIME_DB_PATH), { recursive: true });
+    return;
+  }
+  const shouldCopySeed = (process.env.VERCEL || process.env.LFM_DB_ASSET_PATH) && !fs.existsSync(RUNTIME_DB_PATH);
+  if (!shouldCopySeed) {
+    return;
+  }
+  if (!fs.existsSync(DB_ASSET_PATH)) {
+    throw new Error(`Database asset not found: ${DB_ASSET_PATH}`);
+  }
+  fs.mkdirSync(path.dirname(RUNTIME_DB_PATH), { recursive: true });
+  fs.copyFileSync(DB_ASSET_PATH, RUNTIME_DB_PATH);
+}
+
+async function ensureDbReady() {
+  if (db) {
+    return db;
+  }
+  if (!dbReadyPromise) {
+    dbReadyPromise = (async () => {
+      ensureDatabaseFile();
+      if (typeof Database.open === "function") {
+        db = await Database.open(RUNTIME_DB_PATH);
+      } else {
+        db = new Database(RUNTIME_DB_PATH);
+      }
+      return db;
+    })();
+  }
+  return dbReadyPromise;
+}
 
 function currentLanguage() {
   const manager = db.prepare("SELECT language FROM manager WHERE id = 1").get();
@@ -4147,6 +4177,7 @@ function handleLiveAction(action) {
 }
 
 async function initializeGame({ seedOnly = false } = {}) {
+  await ensureDbReady();
   createSchema();
   await ensureHistoricalSeed();
   if (seedOnly) {

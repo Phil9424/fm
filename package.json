@@ -8,8 +8,10 @@
     "start": "node server/index.js",
     "seed": "node server/index.js --seed-only",
     "ratings:fifa08": "python scripts/generate_fifa08_ratings.py",
+    "prepare:standalone": "node scripts/prepare_standalone_android.js",
     "android:sync": "npx cap sync android",
-    "android:open": "npx cap open android"
+    "android:open": "npx cap open android",
+    "android:standalone": "npm run prepare:standalone && npx cap sync android"
   },
   "keywords": [],
   "author": "Codex",
@@ -17,9 +19,12 @@
   "type": "commonjs",
   "dependencies": {
     "better-sqlite3": "^12.6.2",
+    "capacitor-nodejs": "git+https://github.com/hampoelz/Capacitor-NodeJS.git",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
-    "express": "^5.2.1"
+    "esbuild": "^0.27.4",
+    "express": "^5.2.1",
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
     "@capacitor/android": "^8.2.0",

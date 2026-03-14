@@ -132,6 +132,8 @@ const I18N = {
     saveServerUrl: "Сохранить адрес",
     serverRequired: "Для Android-приложения нужен адрес сервера игры",
     serverSaved: "Адрес сервера сохранен",
+    startingStandalone: "Запускаем автономную игру...",
+    standaloneOffline: "Локальный движок внутри APK не запустился. Можно временно указать внешний сервер.",
   },
   en: {
     refresh: "Refresh",
@@ -261,6 +263,8 @@ const I18N = {
     saveServerUrl: "Save server URL",
     serverRequired: "The Android app needs the game server URL",
     serverSaved: "Server URL saved",
+    startingStandalone: "Starting the offline game engine...",
+    standaloneOffline: "The local APK engine did not start. You can temporarily set an external server.",
   },
 };
 
@@ -628,9 +632,20 @@ function isNativeShell() {
   return window.location.protocol === "capacitor:" || window.location.protocol === "file:";
 }
 
+function nativeNodePlugin() {
+  return window.Capacitor?.Plugins?.NodeJS || window.CapacitorCustomPlatform?.plugins?.NodeJS || null;
+}
+
+function hasStandaloneNode() {
+  return isNativeShell();
+}
+
 function resolveApiUrl(url) {
   if (/^https?:\/\//i.test(url)) {
     return url;
+  }
+  if (hasStandaloneNode()) {
+    return `http://127.0.0.1:3173${url}`;
   }
   const base = normalizedApiBase();
   return base ? `${base}${url}` : url;
@@ -661,6 +676,24 @@ async function api(url, options = {}) {
     throw new Error(payload.error || (ui.language === "ru" ? "Ошибка запроса" : "Request failed"));
   }
   return payload;
+}
+
+async function waitForStandaloneApi(timeoutMs = 35000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch("http://127.0.0.1:3173/api/state");
+      if (response.ok) {
+        return true;
+      }
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  }
+  throw lastError || new Error("Standalone API unavailable");
 }
 
 async function loadState() {
@@ -754,7 +787,7 @@ function toolbarView() {
             <option value="ru" ${ui.language === "ru" ? "selected" : ""}>RU</option>
             <option value="en" ${ui.language === "en" ? "selected" : ""}>EN</option>
           </select>
-          ${isNativeShell() ? `<button class="mini-button" id="serverButton">URL</button>` : ""}
+          ${isNativeShell() && !hasStandaloneNode() ? `<button class="mini-button" id="serverButton">URL</button>` : ""}
           <button class="mini-button" id="saveButton">${t("save")}</button>
           <select id="saveSelect">
             <option value="">${t("load")}</option>
@@ -2517,9 +2550,24 @@ bottomNav.addEventListener("click", (event) => {
 refreshButton.addEventListener("click", loadState);
 refreshButton.textContent = t("refresh");
 
-if (isNativeShell() && !normalizedApiBase()) {
-  renderServerSetup();
-} else {
+async function bootstrap() {
+  if (hasStandaloneNode()) {
+    app.innerHTML = `<section class="loading-card"><p>${t("startingStandalone")}</p></section>`;
+    try {
+      await waitForStandaloneApi();
+      await loadState();
+      return;
+    } catch (error) {
+      renderServerSetup(`${t("standaloneOffline")}${error?.message ? ` ${error.message}` : ""}`);
+      return;
+    }
+  }
+
+  if (isNativeShell() && !normalizedApiBase()) {
+    renderServerSetup();
+    return;
+  }
+
   loadState().catch((error) => {
     if (isNativeShell()) {
       renderServerSetup(error.message);
@@ -2528,6 +2576,8 @@ if (isNativeShell() && !normalizedApiBase()) {
     app.innerHTML = `<section class="loading-card"><p>${error.message}</p></section>`;
   });
 }
+
+bootstrap();
 
 
 

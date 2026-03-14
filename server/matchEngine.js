@@ -182,6 +182,8 @@ function calculateTeamMetrics(team, matchContext = {}) {
   const staminaBase = starters.reduce((sum, player) => sum + player.stamina, 0) / starters.length;
   const moraleBase = starters.reduce((sum, player) => sum + player.morale, 0) / starters.length;
   const fitnessBase = starters.reduce((sum, player) => sum + player.fitness, 0) / starters.length;
+  const moraleBoost = Number(team.moraleBoost || 0);
+  const focusBoost = Number(team.focusBoost || 0);
   const goalkeepingBase =
     starters.find((player) => player.position === "G")?.goalkeeping ||
     starters.reduce((sum, player) => sum + player.goalkeeping, 0) / starters.length;
@@ -192,17 +194,18 @@ function calculateTeamMetrics(team, matchContext = {}) {
     matchContext?.weather?.key === "fog" ? 0.94 :
     1;
 
-  const moraleFactor = 0.9 + moraleBase / 700;
+  const moraleFactor = clamp(0.85 + (moraleBase + moraleBoost * 7) / 540, 0.88, 1.18);
+  const focusFactor = clamp(0.9 + (focusBoost + moraleBoost * 0.45) / 24, 0.9, 1.16);
   const fitnessFactor = 0.88 + fitnessBase / 720;
 
   return {
-    attack: attackBase * mentality.attack * style.finishing * formationBonus.attack * moraleFactor,
-    defense: defenseBase * mentality.defense * formationBonus.defense * fitnessFactor,
-    passing: passingBase * style.passing * mentality.possession * formationBonus.midfield * weatherPenalty,
+    attack: attackBase * mentality.attack * style.finishing * formationBonus.attack * moraleFactor * focusFactor,
+    defense: defenseBase * mentality.defense * formationBonus.defense * fitnessFactor * clamp(0.96 + focusFactor * 0.08, 0.94, 1.12),
+    passing: passingBase * style.passing * mentality.possession * formationBonus.midfield * weatherPenalty * clamp(moraleFactor * 0.98 + focusFactor * 0.04, 0.9, 1.16),
     stamina: staminaBase,
-    transition: (passingBase * 0.45 + attackBase * 0.3 + staminaBase * 0.25) * style.transition * mentality.tempo,
+    transition: (passingBase * 0.45 + attackBase * 0.3 + staminaBase * 0.25) * style.transition * mentality.tempo * clamp((moraleFactor + focusFactor) / 2, 0.9, 1.16),
     goalkeeping: goalkeepingBase * fitnessFactor,
-    discipline: clamp((defenseBase + passingBase) / 2 * style.discipline, 32, 94),
+    discipline: clamp((defenseBase + passingBase) / 2 * style.discipline * clamp(0.94 + focusFactor * 0.08, 0.92, 1.08), 32, 94),
   };
 }
 
@@ -228,6 +231,13 @@ function addCommentary(state, ru, en = ru) {
 
 function createLiveState(fixture, home, away) {
   const language = getLanguage(fixture);
+  const decisionBudget = 3 + Math.floor(Math.random() * 2);
+  const decisionMoments = [
+    10 + Math.floor(Math.random() * 8),
+    24 + Math.floor(Math.random() * 10),
+    51 + Math.floor(Math.random() * 12),
+    70 + Math.floor(Math.random() * 12),
+  ].slice(0, decisionBudget);
   return {
     fixtureId: fixture.id,
     roundNo: fixture.roundNo,
@@ -286,6 +296,10 @@ function createLiveState(fixture, home, away) {
       pregameDone: false,
       halftimeDone: false,
     },
+    decisionPrompt: null,
+    decisionsUsed: 0,
+    decisionBudget,
+    decisionMoments,
   };
 }
 
@@ -378,7 +392,7 @@ function maybeCardEvent(state, side) {
       ? `${offender.name} receives a straight red card for ${team.clubName}.`
       : `${team.clubName} are down to ten after ${offender.name}'s dismissal.`
   );
-  if (false) addCommentary(
+  addCommentary(
     state,
     `${offender.name} получает ${isRed ? "красную" : "желтую"} карточку за ${team.clubName}.`,
     `${offender.name} receives a ${isRed ? "red" : "yellow"} card for ${team.clubName}.`
@@ -633,6 +647,284 @@ function maybeChance(state, side) {
   );
 }
 
+function registerGoal(state, side, scorer, assister = null) {
+  const team = state[side];
+  state.score[side] += 1;
+  state.events.push({
+    minute: state.minute,
+    type: "goal",
+    side,
+    playerId: scorer.id,
+    playerName: scorer.name,
+    assistId: assister?.id || null,
+    assistName: assister?.name || null,
+  });
+  addCommentary(
+    state,
+    `${scorer.name} Р·Р°Р±РёРІР°РµС‚ Р·Р° ${team.clubName}${assister ? ` РїРѕСЃР»Рµ РїРµСЂРµРґР°С‡Рё ${assister.name}` : ""}.`,
+    `${scorer.name} scores for ${team.clubName}${assister ? `, assisted by ${assister.name}` : ""}.`
+  );
+}
+
+function pickSetPieceTaker(team) {
+  const candidates = activeStarters(team).filter((player) => player.position !== "G");
+  return candidates.length ? chooseWeighted(candidates, "passing") : null;
+}
+
+function pickFinisher(team, excludeId = null) {
+  const candidates = activeStarters(team).filter((player) => player.position !== "G" && player.id !== excludeId);
+  return candidates.length ? chooseWeighted(candidates, "attack") : null;
+}
+
+function buildDecisionPrompt(state, side, type) {
+  const team = state[side];
+  const player =
+    type === "penalty" || type === "freeKick" || type === "corner"
+      ? pickSetPieceTaker(team)
+      : pickFinisher(team);
+  if (!player) {
+    return null;
+  }
+
+  const catalog = {
+    penalty: {
+      title: { ru: "Пенальти", en: "Penalty" },
+      description: { ru: `${player.name} подходит к точке.`, en: `${player.name} steps up from the spot.` },
+      primaryChoices: [
+        { id: "left", ru: "Влево", en: "Left" },
+        { id: "center", ru: "По центру", en: "Center" },
+        { id: "right", ru: "Вправо", en: "Right" },
+      ],
+      secondaryChoices: [
+        { id: "low", ru: "Слабо", en: "Low" },
+        { id: "medium", ru: "Средне", en: "Medium" },
+        { id: "high", ru: "Сильно", en: "Power" },
+      ],
+    },
+    dribble: {
+      title: { ru: "Дриблинг", en: "Dribble" },
+      description: { ru: `${player.name} рвется вперед один в один.`, en: `${player.name} drives at the defense.` },
+      primaryChoices: [
+        { id: "pass", ru: "Пас", en: "Pass" },
+        { id: "cross", ru: "Навес", en: "Cross" },
+        { id: "shot", ru: "Удар", en: "Shoot" },
+      ],
+    },
+    freeKick: {
+      title: { ru: "Штрафной", en: "Free kick" },
+      description: { ru: `${player.name} готовит розыгрыш штрафного.`, en: `${player.name} stands over the free kick.` },
+      primaryChoices: [
+        { id: "shot", ru: "Бить", en: "Shoot" },
+        { id: "cross", ru: "Навес", en: "Cross" },
+        { id: "layoff", ru: "Розыгрыш", en: "Lay-off" },
+      ],
+    },
+    corner: {
+      title: { ru: "Угловой", en: "Corner" },
+      description: { ru: `${player.name} готовит подачу с углового.`, en: `${player.name} gets ready for the corner.` },
+      primaryChoices: [
+        { id: "farPost", ru: "На дальнюю", en: "Far post" },
+        { id: "short", ru: "Быстрый розыгрыш", en: "Short" },
+        { id: "lofted", ru: "Высокий навес", en: "Lofted cross" },
+      ],
+    },
+  };
+  const config = catalog[type];
+  if (!config) {
+    return null;
+  }
+
+  return {
+    type,
+    side,
+    playerId: player.id,
+    playerName: player.name,
+    title: localize(getLanguage(state), config.title.ru, config.title.en),
+    description: localize(getLanguage(state), config.description.ru, config.description.en),
+    primaryChoices: config.primaryChoices,
+    secondaryChoices: config.secondaryChoices || null,
+  };
+}
+
+function maybeInteractiveMoment(state) {
+  if (state.decisionPrompt || state.decisionsUsed >= state.decisionBudget) {
+    return false;
+  }
+  const side = state.matchContext?.humanSide;
+  if (!side || !state[side]?.humanControlled || state.minute < 8 || state.minute > 88 || [44, 45, 89, 90].includes(state.minute)) {
+    return false;
+  }
+  const scheduledMinute = state.decisionMoments?.[state.decisionsUsed];
+  if (!scheduledMinute || state.minute < scheduledMinute) {
+    return false;
+  }
+  const types = ["dribble", "freeKick", "corner", "penalty"];
+  const prompt = buildDecisionPrompt(state, side, types[Math.floor(Math.random() * types.length)]);
+  if (!prompt) {
+    return false;
+  }
+  state.decisionPrompt = prompt;
+  state.status = "decision";
+  state.phase = "decision";
+  addCommentary(
+    state,
+    `${prompt.playerName} получает важный эпизод для ${state[side].clubName}.`,
+    `${prompt.playerName} has a key moment for ${state[side].clubName}.`
+  );
+  return true;
+}
+
+function decisionAutoChoice(prompt) {
+  return {
+    choice: prompt?.primaryChoices?.[Math.floor(Math.random() * Math.max(1, prompt.primaryChoices.length))]?.id || prompt?.primaryChoices?.[0]?.id || null,
+    secondaryChoice: prompt?.secondaryChoices?.[Math.floor(Math.random() * Math.max(1, prompt.secondaryChoices.length))]?.id || prompt?.secondaryChoices?.[0]?.id || null,
+  };
+}
+
+function resolveDecisionPrompt(state, action) {
+  const prompt = state.decisionPrompt;
+  if (!prompt) {
+    return state;
+  }
+  const side = prompt.side;
+  const team = state[side];
+  const opponent = state[side === "home" ? "away" : "home"];
+  const taker = activeStarters(team).find((player) => player.id === prompt.playerId) || pickSetPieceTaker(team) || pickFinisher(team);
+  const finisher = pickFinisher(team, taker?.id);
+  const keeper = activeStarters(opponent).find((player) => player.position === "G") || activeStarters(opponent)[0];
+  const primary = action.choice || prompt.primaryChoices?.[0]?.id;
+  const secondary = action.secondaryChoice || prompt.secondaryChoices?.[0]?.id;
+
+  state.decisionPrompt = null;
+  state.decisionsUsed += 1;
+  state.status = "live";
+  state.phase = state.minute <= 45 ? "firstHalf" : "secondHalf";
+
+  if (!taker || !keeper) {
+    return state;
+  }
+
+  const technique = (taker.attack * 0.58 + taker.passing * 0.42 - keeper.goalkeeping * 0.45) / 100;
+  const powerDelta = { low: -0.05, medium: 0.02, high: 0.06 }[secondary] ?? 0;
+
+  if (prompt.type === "penalty") {
+    state.stats[side].shots += 1;
+    state.stats[side].shotsOnTarget += 1;
+    state.stats[side].xg += 0.76;
+    const scoreChance = clamp(0.62 + technique * 0.25 + powerDelta, 0.15, 0.9);
+    const missChance = secondary === "high" ? 0.12 : secondary === "low" ? 0.04 : 0.07;
+    const roll = Math.random();
+    if (roll < missChance) {
+      addCommentary(state, `${taker.name} не попадает с пенальти.`, `${taker.name} misses the penalty.`);
+      return state;
+    }
+    if (roll < missChance + scoreChance) {
+      registerGoal(state, side, taker, null);
+      return state;
+    }
+    addCommentary(state, `${keeper.name} берет пенальти после удара ${taker.name}.`, `${keeper.name} saves ${taker.name}'s penalty.`);
+    return state;
+  }
+
+  if (prompt.type === "dribble") {
+    if (primary === "shot") {
+      state.stats[side].shots += 1;
+      if (Math.random() < clamp(0.42 + technique * 0.2, 0.2, 0.85)) {
+        state.stats[side].shotsOnTarget += 1;
+        if (Math.random() < clamp(0.22 + technique * 0.16, 0.08, 0.62)) {
+          registerGoal(state, side, taker, null);
+        } else {
+          addCommentary(state, `${keeper.name} справляется с ударом ${taker.name}.`, `${keeper.name} deals with ${taker.name}'s shot.`);
+        }
+      } else {
+        addCommentary(state, `${taker.name} завершает проход неточным ударом.`, `${taker.name} ends the run with an off-target shot.`);
+      }
+      return state;
+    }
+    if (finisher && primary === "pass") {
+      if (Math.random() < clamp(0.48 + technique * 0.14, 0.18, 0.82)) {
+        state.stats[side].shots += 1;
+        state.stats[side].shotsOnTarget += 1;
+        if (Math.random() < clamp(0.26 + finisher.attack / 180 - keeper.goalkeeping / 260, 0.1, 0.68)) {
+          registerGoal(state, side, finisher, taker);
+        } else {
+          addCommentary(state, `${finisher.name} не переигрывает ${keeper.name} после паса ${taker.name}.`, `${finisher.name} cannot beat ${keeper.name} after ${taker.name}'s pass.`);
+        }
+      } else {
+        addCommentary(state, `${taker.name} теряет мяч после обводки.`, `${taker.name} loses the ball after the dribble.`);
+      }
+      return state;
+    }
+    if (finisher && primary === "cross") {
+      if (Math.random() < clamp(0.36 + taker.passing / 220, 0.16, 0.74)) {
+        state.stats[side].shots += 1;
+        if (Math.random() < clamp(0.48 + finisher.attack / 210, 0.22, 0.8)) {
+          state.stats[side].shotsOnTarget += 1;
+          if (Math.random() < clamp(0.21 + finisher.attack / 190 - keeper.goalkeeping / 260, 0.08, 0.6)) {
+            registerGoal(state, side, finisher, taker);
+          } else {
+            addCommentary(state, `${keeper.name} спасает после навеса ${taker.name}.`, `${keeper.name} saves the effort after ${taker.name}'s cross.`);
+          }
+        } else {
+          addCommentary(state, `${team.clubName} не выжимает момент из навеса ${taker.name}.`, `${team.clubName} cannot turn ${taker.name}'s cross into a clean finish.`);
+        }
+      } else {
+        addCommentary(state, `${taker.name} навешивает слишком близко к вратарю.`, `${taker.name} floats the ball too close to the keeper.`);
+      }
+      return state;
+    }
+  }
+
+  if (prompt.type === "freeKick") {
+    state.stats[side].shots += 1;
+    if (primary === "shot") {
+      if (Math.random() < clamp(0.34 + technique * 0.18, 0.14, 0.72)) {
+        state.stats[side].shotsOnTarget += 1;
+        if (Math.random() < clamp(0.16 + technique * 0.18, 0.05, 0.48)) {
+          registerGoal(state, side, taker, null);
+        } else {
+          addCommentary(state, `${keeper.name} парирует штрафной ${taker.name}.`, `${keeper.name} keeps out ${taker.name}'s free kick.`);
+        }
+      } else {
+        addCommentary(state, `${taker.name} бьет со штрафного мимо.`, `${taker.name} fires the free kick wide.`);
+      }
+      return state;
+    }
+    if (finisher && Math.random() < clamp(0.42 + taker.passing / 200, 0.16, 0.78)) {
+      state.stats[side].shotsOnTarget += 1;
+      if (Math.random() < clamp(0.18 + finisher.attack / 195, 0.08, 0.55)) {
+        registerGoal(state, side, finisher, taker);
+      } else {
+        addCommentary(state, `${team.clubName} разыгрывает штрафной, но без гола.`, `${team.clubName} work the free kick, but no goal follows.`);
+      }
+    } else {
+      addCommentary(state, `${opponent.clubName} спокойно отбивается после штрафного.`, `${opponent.clubName} handle the free kick well.`);
+    }
+    return state;
+  }
+
+  if (prompt.type === "corner") {
+    if (finisher && Math.random() < clamp(0.38 + taker.passing / 210, 0.18, 0.74)) {
+      state.stats[side].shots += 1;
+      if (Math.random() < clamp(0.46 + finisher.attack / 215, 0.2, 0.78)) {
+        state.stats[side].shotsOnTarget += 1;
+        if (Math.random() < clamp(0.18 + finisher.attack / 205 - keeper.goalkeeping / 280, 0.07, 0.52)) {
+          registerGoal(state, side, finisher, taker);
+        } else {
+          addCommentary(state, `${keeper.name} спасает после углового.`, `${keeper.name} rescues the defense after the corner.`);
+        }
+      } else {
+        addCommentary(state, `${team.clubName} не доводит угловой до опасного удара.`, `${team.clubName} cannot turn the corner into a dangerous finish.`);
+      }
+    } else {
+      addCommentary(state, `${opponent.clubName} отбивается после углового.`, `${opponent.clubName} clear the corner.`);
+    }
+    return state;
+  }
+
+  return state;
+}
+
 function simulateMinute(state) {
   if (state.status !== "live") {
     return state;
@@ -666,6 +958,10 @@ function simulateMinute(state) {
 
   maybeCardEvent(state, "home");
   maybeCardEvent(state, "away");
+
+  if (maybeInteractiveMoment(state)) {
+    return state;
+  }
 
   const homeChances = Math.random() > 0.58 ? 2 : 1;
   const awayChances = Math.random() > 0.64 ? 2 : 1;
@@ -705,9 +1001,140 @@ function applySpeechEffect(team, option) {
   team.focusBoost += option.focusDelta;
   team.starters = team.starters.map((player) => ({
     ...player,
-    morale: clamp(player.morale + option.moraleDelta, 45, 98),
+    morale: clamp(player.morale + option.moraleDelta, 30, 98),
     fitness: clamp(player.fitness + option.focusDelta * 0.3, 50, 98),
   }));
+}
+
+function speechTone(option) {
+  const moraleDelta = Number(option?.moraleDelta || 0);
+  const focusDelta = Number(option?.focusDelta || 0);
+  if (focusDelta >= 4 && moraleDelta <= 2) {
+    return "demanding";
+  }
+  if (moraleDelta >= 5 || focusDelta < 0) {
+    return "aggressive";
+  }
+  if (moraleDelta >= 4 && focusDelta <= 1) {
+    return "supportive";
+  }
+  return "balanced";
+}
+
+function averageTeamMorale(team) {
+  const starters = activeStarters(team);
+  if (!starters.length) {
+    return 70;
+  }
+  return starters.reduce((sum, player) => sum + Number(player.morale || 70), 0) / starters.length;
+}
+
+function goalDifferenceForSide(state, side) {
+  const ownGoals = Number(state?.score?.[side] || 0);
+  const opponentGoals = Number(state?.score?.[side === "home" ? "away" : "home"] || 0);
+  return ownGoals - opponentGoals;
+}
+
+function contextualizeSpeech(state, side, option, stage) {
+  const team = state[side];
+  const tone = speechTone(option);
+  const goalDifference = goalDifferenceForSide(state, side);
+  const averageMorale = averageTeamMorale(team);
+  const baseMoraleDelta = Number(option?.moraleDelta || 0);
+  const baseFocusDelta = Number(option?.focusDelta || 0);
+  let moraleDelta = baseMoraleDelta;
+  let focusDelta = baseFocusDelta;
+
+  if (stage === "pregame") {
+    if (averageMorale <= 56) {
+      if (tone === "supportive" || tone === "balanced") {
+        moraleDelta += 1;
+        focusDelta += 1;
+      } else {
+        moraleDelta -= 3;
+      }
+    } else if (averageMorale >= 82 && tone === "supportive") {
+      moraleDelta -= 1;
+      focusDelta += 1;
+    }
+  }
+
+  if (stage === "halftime") {
+    if (goalDifference <= -4) {
+      if (tone === "supportive") {
+        moraleDelta -= 7;
+        focusDelta -= 1;
+      } else if (tone === "balanced") {
+        moraleDelta += 1;
+        focusDelta += 2;
+      } else {
+        moraleDelta -= 5;
+        focusDelta -= 1;
+      }
+    } else if (goalDifference <= -2) {
+      if (tone === "balanced") {
+        moraleDelta += 1;
+        focusDelta += 2;
+      } else if (tone === "supportive") {
+        focusDelta += 1;
+      } else {
+        moraleDelta -= 4;
+      }
+    } else if (goalDifference === -1) {
+      if (tone === "balanced" || tone === "supportive") {
+        moraleDelta += 1;
+        focusDelta += 1;
+      } else {
+        moraleDelta -= 2;
+      }
+    } else if (goalDifference >= 2) {
+      if (tone === "supportive" || tone === "balanced") {
+        moraleDelta += 1;
+      } else {
+        moraleDelta -= 7;
+        focusDelta -= 1;
+      }
+    } else if (goalDifference === 1) {
+      if (tone === "aggressive" || tone === "demanding") {
+        moraleDelta -= 4;
+      } else {
+        focusDelta += 1;
+      }
+    } else if (tone === "aggressive") {
+      moraleDelta -= 2;
+    } else {
+      focusDelta += 1;
+    }
+  }
+
+  if (averageMorale <= 48 && (tone === "aggressive" || tone === "demanding")) {
+    moraleDelta -= 2;
+  }
+
+  const reactionLevel =
+    moraleDelta >= baseMoraleDelta + 1 || focusDelta >= baseFocusDelta + 2
+      ? "positive"
+      : moraleDelta < 0 || focusDelta < baseFocusDelta
+        ? "negative"
+        : "neutral";
+
+  return {
+    ...option,
+    moraleDelta,
+    focusDelta,
+    reactionRu:
+      reactionLevel === "positive"
+        ? `${team.clubName} хорошо принимает речь тренера и заметно собирается.`
+        : reactionLevel === "negative"
+          ? `${team.clubName} реагирует на речь тяжело: слова звучат не к месту.`
+          : `${team.clubName} спокойно принимает установку и возвращается к игре.`,
+    reactionEn:
+      reactionLevel === "positive"
+        ? `${team.clubName} take the talk well and look sharper.`
+        : reactionLevel === "negative"
+          ? `${team.clubName} do not respond well. The message feels off for the moment.`
+          : `${team.clubName} take the message on board and reset for the next phase.`,
+  };
 }
 
 function applyMatchAction(state, action) {
@@ -718,9 +1145,11 @@ function applyMatchAction(state, action) {
   }
 
   if (action.type === "speech" && action.option) {
-    applySpeechEffect(team, action.option);
+    const appliedSpeech = contextualizeSpeech(state, side, action.option, action.stage);
+    applySpeechEffect(team, appliedSpeech);
     refreshTeamMetrics(team, state.matchContext);
-    addCommentary(
+    addCommentary(state, appliedSpeech.reactionRu, appliedSpeech.reactionEn);
+    if (false) addCommentary(
       state,
       `${team.clubName} очень живо реагирует на речь тренера.`,
       `${team.clubName} respond to the team talk with fresh energy.`
@@ -763,6 +1192,10 @@ function applyMatchAction(state, action) {
     return state;
   }
 
+  if (action.type === "decision") {
+    return resolveDecisionPrompt(state, action);
+  }
+
   if (action.type === "tactics") {
     if (action.formation && FORMATIONS[action.formation]) {
       team.formation = action.formation;
@@ -795,6 +1228,14 @@ function fastForwardMatch(state) {
   while (state.status !== "finished") {
     if (state.status === "pregame" || state.status === "halftime") {
       state = applyMatchAction(state, { type: "resume", side: state.matchContext?.humanSide || "home" });
+      continue;
+    }
+    if (state.status === "decision" && state.decisionPrompt) {
+      state = applyMatchAction(state, {
+        type: "decision",
+        side: state.matchContext?.humanSide || "home",
+        ...decisionAutoChoice(state.decisionPrompt),
+      });
       continue;
     }
     state = simulateMinute(state);

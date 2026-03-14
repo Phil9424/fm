@@ -8,7 +8,9 @@ const CACHE_DIR = process.env.HISTORICAL_CACHE_DIR
   : (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME)
     ? path.join(os.tmpdir(), "fm-historical-cache")
     : path.join(__dirname, "..", ".cache", "historical");
+const FIFA_INDEX_DATA_FILE = path.join(__dirname, "data", "fifa08-ratings.json");
 const SEASON_LABEL = "2007-08";
+let cachedFifaIndexLookup = null;
 
 const COMPETITIONS = [
   {
@@ -147,6 +149,404 @@ function normalizeName(value) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]+/g, "")
     .toLowerCase();
+}
+
+function broadPosition(value) {
+  const token = String(value || "").toUpperCase();
+  if (!token) {
+    return "M";
+  }
+  if (token.includes("GK")) {
+    return "G";
+  }
+  if (["CB", "LB", "RB", "LWB", "RWB", "SWB", "SW"].some((item) => token.includes(item))) {
+    return "D";
+  }
+  if (["ST", "CF", "LF", "RF", "LS", "RS", "LW", "RW", "LWF", "RWF"].some((item) => token.includes(item))) {
+    return "F";
+  }
+  return "M";
+}
+
+function cleanFifaIndexTeamName(value) {
+  return String(value || "")
+    .replace(/\s+FIFA\s*08$/i, "")
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function clubTokens(value) {
+  const stopWords = new Set(["fc", "cf", "ac", "as", "sc", "fk", "club", "football", "calcio", "cd", "ud"]);
+  return cleanFifaIndexTeamName(value)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .toLowerCase()
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token && !stopWords.has(token));
+}
+
+function clubsRoughlyMatch(a, b) {
+  const exactA = normalizeName(cleanFifaIndexTeamName(a));
+  const exactB = normalizeName(cleanFifaIndexTeamName(b));
+  if (exactA && exactA === exactB) {
+    return true;
+  }
+
+  const tokensA = clubTokens(a);
+  const tokensB = clubTokens(b);
+  if (!tokensA.length || !tokensB.length) {
+    return false;
+  }
+
+  const shared = tokensA.filter((token) => tokensB.includes(token)).length;
+  return shared >= Math.min(tokensA.length, tokensB.length) || shared >= 2;
+}
+
+function personTokens(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .toLowerCase()
+    .split(" ")
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function tokenLooselyMatches(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+function namesRoughlyMatch(a, b) {
+  const normalizedA = normalizeName(a);
+  const normalizedB = normalizeName(b);
+  if (normalizedA && normalizedA === normalizedB) {
+    return true;
+  }
+
+  const tokensA = personTokens(a);
+  const tokensB = personTokens(b);
+  if (!tokensA.length || !tokensB.length) {
+    return false;
+  }
+
+  let shared = 0;
+  for (const tokenA of tokensA) {
+    if (tokensB.some((tokenB) => tokenLooselyMatches(tokenA, tokenB))) {
+      shared += 1;
+    }
+  }
+
+  const minShared = Math.min(tokensA.length, tokensB.length);
+  return shared >= minShared || (shared >= 2 && Math.abs(tokensA.length - tokensB.length) <= 2);
+}
+
+function lastNameKey(value) {
+  const tokens = personTokens(value);
+  return tokens.length ? tokens[tokens.length - 1] : "";
+}
+
+function bigrams(value) {
+  const normalized = normalizeName(value);
+  if (normalized.length < 2) {
+    return new Set(normalized ? [normalized] : []);
+  }
+  const result = new Set();
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    result.add(normalized.slice(index, index + 2));
+  }
+  return result;
+}
+
+function nameSimilarity(a, b) {
+  const gramsA = bigrams(a);
+  const gramsB = bigrams(b);
+  if (!gramsA.size || !gramsB.size) {
+    return 0;
+  }
+
+  let shared = 0;
+  gramsA.forEach((gram) => {
+    if (gramsB.has(gram)) {
+      shared += 1;
+    }
+  });
+  return (shared * 2) / (gramsA.size + gramsB.size);
+}
+
+function buildFifaIndexLookup() {
+  if (cachedFifaIndexLookup) {
+    return cachedFifaIndexLookup;
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(fs.readFileSync(FIFA_INDEX_DATA_FILE, "utf8"));
+  } catch (_error) {
+    cachedFifaIndexLookup = { byExact: new Map(), byName: new Map(), byLastName: new Map(), byTeam: new Map() };
+    return cachedFifaIndexLookup;
+  }
+
+  const entries = Array.isArray(payload) ? payload : Array.isArray(payload?.players) ? payload.players : [];
+  const byExact = new Map();
+  const byName = new Map();
+  const byLastName = new Map();
+  const byTeam = new Map();
+
+  entries.forEach((entry) => {
+    const normalizedName = normalizeName(entry.name || "");
+    if (!normalizedName) {
+      return;
+    }
+
+    const normalizedTeam = normalizeName(cleanFifaIndexTeamName(entry.team || ""));
+    const normalizedEntry = {
+      ...entry,
+      team: cleanFifaIndexTeamName(entry.team || ""),
+      overall: Number(entry.overall || 0),
+      age: Number(entry.age || 24),
+      broadPosition: broadPosition(entry.position),
+    };
+
+    if (normalizedTeam) {
+      const exactKey = `${normalizedName}|${normalizedTeam}`;
+      const list = byExact.get(exactKey) || [];
+      list.push(normalizedEntry);
+      byExact.set(exactKey, list);
+
+      const teamList = byTeam.get(normalizedTeam) || [];
+      teamList.push(normalizedEntry);
+      byTeam.set(normalizedTeam, teamList);
+    }
+
+    const nameList = byName.get(normalizedName) || [];
+    nameList.push(normalizedEntry);
+    byName.set(normalizedName, nameList);
+
+    const lastToken = lastNameKey(entry.name || "");
+    if (lastToken) {
+      const lastNameList = byLastName.get(lastToken) || [];
+      lastNameList.push(normalizedEntry);
+      byLastName.set(lastToken, lastNameList);
+    }
+  });
+
+  cachedFifaIndexLookup = { byExact, byName, byLastName, byTeam };
+  return cachedFifaIndexLookup;
+}
+
+function chooseBestFifaIndexEntry(candidates, player, clubProfile, strictClubMatch = false) {
+  if (!candidates.length) {
+    return null;
+  }
+
+  const expectedAge = parseAge(player.birthDate);
+  const expectedPosition = broadPosition(player.pos || primaryPosition(player.pos));
+  const clubLabels = [clubProfile.name || "", clubProfile.shortName || ""].filter(Boolean);
+
+  const ranked = candidates
+    .map((candidate) => {
+      const clubMatch = clubLabels.some((label) => clubsRoughlyMatch(label, candidate.team || ""));
+      const ageGap = Math.abs((candidate.age || expectedAge) - expectedAge);
+      const positionPenalty = candidate.broadPosition && candidate.broadPosition !== expectedPosition ? 4 : 0;
+      const clubPenalty = strictClubMatch ? (clubMatch ? 0 : 12) : (clubMatch ? 0 : 6);
+      return {
+        candidate,
+        score: ageGap + positionPenalty + clubPenalty,
+      };
+    })
+    .sort((a, b) => a.score - b.score || b.candidate.overall - a.candidate.overall);
+
+  if (!ranked.length || ranked[0].score > (strictClubMatch ? 12 : 8)) {
+    return null;
+  }
+  return ranked[0].candidate;
+}
+
+function findClubScopedFifaCandidates(lookup, clubProfile) {
+  const candidates = [];
+  lookup.byTeam.forEach((players) => {
+    if (players.length && [clubProfile.name, clubProfile.shortName].filter(Boolean).some((label) => clubsRoughlyMatch(label, players[0]?.team || ""))) {
+      candidates.push(...players);
+    }
+  });
+  return candidates;
+}
+
+function buildFifaAttributeTargets(overall, position) {
+  if (position === "G") {
+    return {
+      attack: 12,
+      defense: clamp(overall - 16, 20, 78),
+      passing: clamp(overall - 18, 18, 75),
+      stamina: clamp(overall - 7, 35, 84),
+      goalkeeping: clamp(overall + 5, 48, 96),
+    };
+  }
+
+  if (position === "D") {
+    return {
+      attack: clamp(overall - 10, 18, 84),
+      defense: clamp(overall + 6, 40, 95),
+      passing: clamp(overall - 2, 25, 88),
+      stamina: clamp(overall + 2, 38, 94),
+      goalkeeping: 12,
+    };
+  }
+
+  if (position === "F") {
+    return {
+      attack: clamp(overall + 7, 36, 95),
+      defense: clamp(overall - 12, 12, 70),
+      passing: clamp(overall + 1, 26, 92),
+      stamina: clamp(overall, 34, 92),
+      goalkeeping: 11,
+    };
+  }
+
+  return {
+    attack: clamp(overall + 1, 24, 92),
+    defense: clamp(overall - 1, 20, 88),
+    passing: clamp(overall + 5, 32, 95),
+    stamina: clamp(overall + 2, 38, 94),
+    goalkeeping: 12,
+  };
+}
+
+function recalculateEconomicsForOverall(overall, tier) {
+  return {
+    wage: Math.round(overall * overall * (tier === 1 ? 44 : 29)),
+    value: Math.round(overall * overall * overall * (tier === 1 ? 110 : 82)),
+  };
+}
+
+function applyFifaIndexRating(player, clubProfile, attributes) {
+  const lookup = buildFifaIndexLookup();
+  if (!lookup.byName.size) {
+    return { ...attributes, source: "statscrew-profile" };
+  }
+
+  const normalizedName = normalizeName(player.name || "");
+  if (!normalizedName) {
+    return { ...attributes, source: "statscrew-profile" };
+  }
+
+  const exactCandidates = [
+    lookup.byExact.get(`${normalizedName}|${normalizeName(cleanFifaIndexTeamName(clubProfile.name || ""))}`) || [],
+    lookup.byExact.get(`${normalizedName}|${normalizeName(cleanFifaIndexTeamName(clubProfile.shortName || ""))}`) || [],
+  ].flat();
+
+  const fifaEntry =
+    chooseBestFifaIndexEntry(exactCandidates, player, clubProfile, true) ||
+    chooseBestFifaIndexEntry(lookup.byName.get(normalizedName) || [], player, clubProfile, false) ||
+    chooseBestFifaIndexEntry(
+      (lookup.byLastName.get(lastNameKey(player.name || "")) || []).filter((candidate) => namesRoughlyMatch(player.name || "", candidate.name || "")),
+      player,
+      clubProfile,
+      false
+    ) ||
+    chooseBestFifaIndexEntry(
+      findClubScopedFifaCandidates(lookup, clubProfile).filter((candidate) => {
+        const similarity = nameSimilarity(player.name || "", candidate.name || "");
+        const positionMatch =
+          !candidate.broadPosition ||
+          candidate.broadPosition === broadPosition(player.pos || primaryPosition(player.pos));
+        const ageGap = Math.abs(Number(candidate.age || parseAge(player.birthDate)) - parseAge(player.birthDate));
+        return positionMatch && ageGap <= 3 && similarity >= 0.58;
+      }),
+      player,
+      clubProfile,
+      false
+    );
+
+  if (!fifaEntry?.overall) {
+    return { ...attributes, source: "statscrew-profile" };
+  }
+
+  const position = fifaEntry.broadPosition || broadPosition(player.pos || primaryPosition(player.pos));
+  const targets = buildFifaAttributeTargets(fifaEntry.overall, position);
+  const blend = (base, target, min, max) => clamp(Math.round(base * 0.38 + target * 0.62), min, max);
+  const economics = recalculateEconomicsForOverall(fifaEntry.overall, clubProfile.tier);
+
+  return {
+    ...attributes,
+    overall: fifaEntry.overall,
+    attack: blend(attributes.attack, targets.attack, 10, 95),
+    defense: blend(attributes.defense, targets.defense, 10, 95),
+    passing: blend(attributes.passing, targets.passing, 10, 95),
+    stamina: blend(attributes.stamina, targets.stamina, 24, 96),
+    goalkeeping: blend(attributes.goalkeeping, targets.goalkeeping, 10, 96),
+    wage: economics.wage,
+    value: economics.value,
+    source: "fifaindex-fifa08-list",
+  };
+}
+
+function buildFifaTeamRoster(clubProfile, minSize = 24) {
+  const lookup = buildFifaIndexLookup();
+  if (!lookup.byTeam.size) {
+    return [];
+  }
+
+  const teamEntries = [...lookup.byTeam.entries()]
+    .map(([teamKey, players]) => ({
+      teamKey,
+      players,
+      score:
+        clubsRoughlyMatch(clubProfile.name, players[0]?.team || "") ? 0 :
+        clubsRoughlyMatch(clubProfile.shortName, players[0]?.team || "") ? 1 :
+        10,
+    }))
+    .filter((entry) => entry.score < 10)
+    .sort((a, b) => a.score - b.score || b.players.length - a.players.length);
+
+  if (!teamEntries.length) {
+    return [];
+  }
+
+  const squad = [...teamEntries[0].players]
+    .sort((a, b) => b.overall - a.overall || a.age - b.age)
+    .slice(0, Math.max(minSize, 24))
+    .map((entry) => {
+      const position = broadPosition(entry.position);
+      const targets = buildFifaAttributeTargets(entry.overall, position);
+      const economics = recalculateEconomicsForOverall(entry.overall, clubProfile.tier);
+      return {
+        name: entry.name,
+        pos: position,
+        secondaryPositions: secondaryPositions(entry.position || position),
+        nationality: entry.nationality || clubProfile.country,
+        birthDate: "",
+        hometown: "",
+        gp: 0,
+        gs: 0,
+        minutes: 0,
+        goals: 0,
+        assists: 0,
+        yellow: 0,
+        red: 0,
+        shots: 0,
+        shotsOnGoal: 0,
+        age: clamp(Number(entry.age || 24), 16, 40),
+        overall: entry.overall,
+        attack: targets.attack,
+        defense: targets.defense,
+        passing: targets.passing,
+        stamina: targets.stamina,
+        goalkeeping: targets.goalkeeping,
+        wage: economics.wage,
+        value: economics.value,
+        source: "fifaindex-fifa08-team",
+      };
+    });
+
+  return squad;
 }
 
 function hashString(input) {
@@ -518,7 +918,7 @@ async function importClubData(team, clubProfile) {
         ...stats,
         pos: row.pos || stats.pos || "M",
       };
-      const attributes = calculatePlayerAttributes(merged, clubProfile);
+      const attributes = applyFifaIndexRating(merged, clubProfile, calculatePlayerAttributes(merged, clubProfile));
       return {
         name: merged.name,
         pos: primaryPosition(merged.pos),
@@ -535,16 +935,55 @@ async function importClubData(team, clubProfile) {
         red: merged.red || 0,
         shots: merged.shots || 0,
         shotsOnGoal: merged.shotsOnGoal || 0,
+        source: attributes.source || "statscrew-profile",
         ...attributes,
       };
     });
+
+    const fifaRoster = buildFifaTeamRoster(clubProfile, 24);
+    if (fifaRoster.length >= 18) {
+      return fifaRoster.map((candidate) => {
+        const statsMatch = players.find((player) => namesRoughlyMatch(player.name, candidate.name));
+        if (!statsMatch) {
+          return candidate;
+        }
+
+        return {
+          ...statsMatch,
+          name: candidate.name,
+          pos: candidate.pos,
+          secondaryPositions: candidate.secondaryPositions,
+          age: candidate.age,
+          overall: candidate.overall,
+          attack: candidate.attack,
+          defense: candidate.defense,
+          passing: candidate.passing,
+          stamina: candidate.stamina,
+          goalkeeping: candidate.goalkeeping,
+          wage: candidate.wage,
+          value: candidate.value,
+          source: candidate.source,
+        };
+      });
+    }
 
     if (players.length >= 18) {
       return players;
     }
 
+    const fifaFallback = fifaRoster.filter(
+      (candidate) => !players.some((player) => namesRoughlyMatch(player.name, candidate.name))
+    );
+    if (fifaFallback.length) {
+      return [...players, ...fifaFallback].slice(0, 28);
+    }
+
     return [...players, ...generateFallbackRoster(clubProfile, 24 - players.length)];
   } catch (error) {
+    const fifaRoster = buildFifaTeamRoster(clubProfile, 24);
+    if (fifaRoster.length) {
+      return fifaRoster;
+    }
     return generateFallbackRoster(clubProfile);
   }
 }
@@ -639,7 +1078,7 @@ async function importHistoricalSeason() {
           minutes: player.minutes || 0,
           shots: player.shots || 0,
           shotsOnGoal: player.shotsOnGoal || 0,
-          source: "statscrew-fifa08-profile",
+          source: player.source || "statscrew-profile",
         });
       }
     }

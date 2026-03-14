@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon server/index.js",
     "start": "node server/index.js",
-    "seed": "node server/index.js --seed-only"
+    "seed": "node server/index.js --seed-only",
+    "ratings:fifa08": "python scripts/generate_fifa08_ratings.py"
   },
   "keywords": [],
   "author": "Codex",

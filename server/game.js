@@ -28,6 +28,7 @@ if (process.env.VERCEL && !fs.existsSync(RUNTIME_DB_PATH)) {
 }
 
 const db = new Database(RUNTIME_DB_PATH);
+const HISTORICAL_SEED_VERSION = "5";
 const KNOCKOUT_STAGE_SEQUENCE = ["Round of 16", "Quarter-final", "Semi-final", "Final"];
 const LEGACY_KNOCKOUT_STAGE_ALIASES = {
   "1/8 Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРІР‚СњР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В»Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°": "Round of 16",
@@ -60,6 +61,123 @@ function localize(ru, en) {
 }
 function formatMoney(value) {
   return Math.round(value || 0).toLocaleString("en-US");
+}
+
+function pickRandom(options) {
+  if (!Array.isArray(options) || !options.length) {
+    return "";
+  }
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+function normalizeRosterName(name) {
+  return String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ß/g, "ss")
+    .replace(/æ/gi, "ae")
+    .replace(/œ/gi, "oe")
+    .replace(/ð/gi, "d")
+    .replace(/þ/gi, "th")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function rosterNamesMatch(left, right) {
+  const a = normalizeRosterName(left);
+  const b = normalizeRosterName(right);
+  if (!a || !b) {
+    return false;
+  }
+  if (a === b || a.includes(b) || b.includes(a)) {
+    return true;
+  }
+
+  const aTokens = a.split(" ").filter(Boolean);
+  const bTokens = b.split(" ").filter(Boolean);
+  const overlap = aTokens.filter((token) => bTokens.includes(token));
+  if (overlap.length >= 2) {
+    return true;
+  }
+
+  const aLast = aTokens[aTokens.length - 1];
+  const bLast = bTokens[bTokens.length - 1];
+  return overlap.length >= 1 && Boolean(aLast && bLast && aLast === bLast);
+}
+
+function fillTemplate(template, values = {}) {
+  return String(template || "").replace(/\{(\w+)\}/g, (_match, key) => `${values[key] ?? ""}`);
+}
+
+function transferWindowOpenByDate(dateString) {
+  const safeDate = String(dateString || buildRoundDate(1)).slice(0, 10);
+  const date = new Date(`${safeDate}T12:00:00Z`);
+  const month = date.getUTCMonth() + 1;
+  return month === 1 || (month >= 7 && month <= 9);
+}
+
+function currentTransferWindowDate() {
+  const manager = getManager();
+  if (!manager) {
+    return buildRoundDate(1);
+  }
+  const club = getManagerClub();
+  const nextFixture = club ? getNextFixture(club.id) : null;
+  return nextFixture?.match_date || nextFixture?.matchDate || buildRoundDate(manager.current_round || 1);
+}
+
+function getTransferWindowStatus() {
+  const date = currentTransferWindowDate();
+  return {
+    date,
+    open: transferWindowOpenByDate(date),
+  };
+}
+
+function isTransferWindowOpen(roundNo = null) {
+  if (roundNo == null) {
+    return getTransferWindowStatus().open;
+  }
+  return transferWindowOpenByDate(buildRoundDate(roundNo));
+}
+
+function assertTransferWindowOpen() {
+  if (!isTransferWindowOpen()) {
+    throw new Error(localize(
+      "Трансферное окно закрыто. Сделки доступны только в январе и с июля по сентябрь.",
+      "The transfer window is closed. Deals are only available in January and from July to September."
+    ));
+  }
+}
+
+function hasTrainingCampThisRound(roundNo) {
+  return Boolean(
+    db.prepare(`
+      SELECT 1
+      FROM finance_entries
+      WHERE category = 'training' AND round_no = ?
+      LIMIT 1
+    `).get(roundNo)
+  );
+}
+
+function adjustClubBalance(clubId, delta) {
+  if (!clubId || !delta) {
+    return;
+  }
+  const club = db.prepare("SELECT balance FROM clubs WHERE id = ?").get(clubId);
+  if (!club) {
+    return;
+  }
+  const manager = getManager();
+  const startingBalance = manager?.club_id === clubId ? (manager.cash || 0) : (club.balance || 0);
+  const nextBalance = Math.max(0, Math.round(startingBalance + delta));
+  db.prepare("UPDATE clubs SET balance = ? WHERE id = ?").run(nextBalance, clubId);
+
+  if (manager?.club_id === clubId) {
+    db.prepare("UPDATE manager SET cash = ? WHERE id = 1").run(nextBalance);
+  }
 }
 
 function countryCupName(country) {
@@ -297,6 +415,25 @@ function createSchema() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS news_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      round_no INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS manager_mail (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      round_no INTEGER NOT NULL DEFAULT 0,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS live_match (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       fixture_id INTEGER NOT NULL,
@@ -339,6 +476,7 @@ function createSchema() {
   ensureColumn("players", "injury_games", "INTEGER DEFAULT 0");
   ensureColumn("players", "discipline_json", "TEXT DEFAULT '{}'");
   ensureColumn("manager", "language", "TEXT DEFAULT 'en'");
+  ensureColumn("manager", "trophies_json", "TEXT DEFAULT '[]'");
 }
 
 function getMeta(key) {
@@ -365,6 +503,8 @@ function clearRuntimeTables() {
     DELETE FROM live_match;
     DELETE FROM transfer_offers;
     DELETE FROM finance_entries;
+    DELETE FROM news_items;
+    DELETE FROM manager_mail;
     DELETE FROM transfer_market;
     DELETE FROM fixtures;
     DELETE FROM club_tactics;
@@ -406,17 +546,211 @@ function writeSeedData(data) {
     data.players.forEach((player) => insertPlayer.run(player));
   });
   transaction();
-  setMeta("seed_version", "2");
+  setMeta("seed_version", HISTORICAL_SEED_VERSION);
   setMeta("seed_season", SEASON_LABEL);
 }
 
+function syncRuntimePlayersFromSeed() {
+  const runtimePlayerCount = db.prepare("SELECT COUNT(*) AS count FROM players").get()?.count || 0;
+  if (!runtimePlayerCount) {
+    return;
+  }
+
+  const seedPlayers = db.prepare(`
+    SELECT
+      club_id AS clubId,
+      name,
+      overall,
+      attack,
+      defense,
+      passing,
+      stamina,
+      goalkeeping,
+      wage,
+      value
+    FROM seed_players
+  `).all();
+
+  const updatePlayer = db.prepare(`
+    UPDATE players
+    SET
+      overall = @overall,
+      attack = @attack,
+      defense = @defense,
+      passing = @passing,
+      stamina = @stamina,
+      goalkeeping = @goalkeeping,
+      wage = @wage,
+      value = @value
+    WHERE club_id = @clubId AND name = @name
+  `);
+
+  const transaction = db.transaction((players) => {
+    players.forEach((player) => updatePlayer.run(player));
+  });
+  transaction(seedPlayers);
+}
+
+function replaceRuntimeClubRosterFromSeed(clubId) {
+  if (!clubId) {
+    return;
+  }
+
+  const seedPlayers = db.prepare(`
+    SELECT
+      club_id AS clubId,
+      name,
+      position,
+      secondary_positions AS secondaryPositions,
+      nationality,
+      birth_date AS birthDate,
+      hometown,
+      age,
+      overall,
+      attack,
+      defense,
+      passing,
+      stamina,
+      goalkeeping,
+      wage,
+      value
+    FROM seed_players
+    WHERE club_id = ?
+    ORDER BY overall DESC, name ASC
+  `).all(clubId);
+
+  if (!seedPlayers.length) {
+    return;
+  }
+
+  const runtimePlayers = db.prepare(`
+    SELECT *
+    FROM players
+    WHERE club_id = ?
+    ORDER BY overall DESC, id ASC
+  `).all(clubId);
+
+  const usedRuntimeIds = new Set();
+  const matchedRuntimeIds = new Set();
+  const updates = [];
+  const inserts = [];
+
+  let nextPlayerId = (db.prepare("SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM players").get()?.nextId || 1);
+
+  seedPlayers.forEach((seedPlayer) => {
+    const runtimeMatch = runtimePlayers.find((player) => !usedRuntimeIds.has(player.id) && rosterNamesMatch(player.name, seedPlayer.name));
+    if (!runtimeMatch) {
+      inserts.push({
+        id: nextPlayerId++,
+        clubId,
+        name: seedPlayer.name,
+        position: seedPlayer.position,
+        secondaryPositions: seedPlayer.secondaryPositions,
+        nationality: seedPlayer.nationality,
+        birthDate: seedPlayer.birthDate,
+        hometown: seedPlayer.hometown,
+        age: seedPlayer.age,
+        overall: seedPlayer.overall,
+        attack: seedPlayer.attack,
+        defense: seedPlayer.defense,
+        passing: seedPlayer.passing,
+        stamina: seedPlayer.stamina,
+        goalkeeping: seedPlayer.goalkeeping,
+        wage: seedPlayer.wage,
+        value: seedPlayer.value,
+      });
+      return;
+    }
+
+    usedRuntimeIds.add(runtimeMatch.id);
+    matchedRuntimeIds.add(runtimeMatch.id);
+    updates.push({
+      id: runtimeMatch.id,
+      clubId,
+      name: seedPlayer.name,
+      position: seedPlayer.position,
+      secondaryPositions: seedPlayer.secondaryPositions,
+      nationality: seedPlayer.nationality,
+      birthDate: seedPlayer.birthDate,
+      hometown: seedPlayer.hometown,
+      age: seedPlayer.age,
+      overall: seedPlayer.overall,
+      attack: seedPlayer.attack,
+      defense: seedPlayer.defense,
+      passing: seedPlayer.passing,
+      stamina: seedPlayer.stamina,
+      goalkeeping: seedPlayer.goalkeeping,
+      wage: seedPlayer.wage,
+      value: seedPlayer.value,
+    });
+  });
+
+  const deleteIds = runtimePlayers.filter((player) => !matchedRuntimeIds.has(player.id)).map((player) => player.id);
+  const updatePlayer = db.prepare(`
+    UPDATE players
+    SET
+      club_id = @clubId,
+      name = @name,
+      position = @position,
+      secondary_positions = @secondaryPositions,
+      nationality = @nationality,
+      birth_date = @birthDate,
+      hometown = @hometown,
+      age = @age,
+      overall = @overall,
+      attack = @attack,
+      defense = @defense,
+      passing = @passing,
+      stamina = @stamina,
+      goalkeeping = @goalkeeping,
+      wage = @wage,
+      value = @value
+    WHERE id = @id
+  `);
+  const insertPlayer = db.prepare(`
+    INSERT INTO players (
+      id, club_id, name, position, secondary_positions, nationality, birth_date, hometown, age,
+      overall, attack, defense, passing, stamina, goalkeeping, wage, value, morale, fitness,
+      goals, assists, yellow_cards, red_cards, appearances, starts, minutes, injury_games, discipline_json
+    ) VALUES (
+      @id, @clubId, @name, @position, @secondaryPositions, @nationality, @birthDate, @hometown, @age,
+      @overall, @attack, @defense, @passing, @stamina, @goalkeeping, @wage, @value, 72, 90,
+      0, 0, 0, 0, 0, 0, 0, 0, '{}'
+    )
+  `);
+  const deleteTransferMarket = db.prepare("DELETE FROM transfer_market WHERE player_id = ?");
+  const deleteTransferOffers = db.prepare("DELETE FROM transfer_offers WHERE player_id = ?");
+  const deletePlayer = db.prepare("DELETE FROM players WHERE id = ?");
+  const deleteTactic = db.prepare("DELETE FROM club_tactics WHERE club_id = ?");
+
+  const transaction = db.transaction(() => {
+    updates.forEach((player) => updatePlayer.run(player));
+    inserts.forEach((player) => insertPlayer.run(player));
+    deleteIds.forEach((playerId) => {
+      deleteTransferMarket.run(playerId);
+      deleteTransferOffers.run(playerId);
+      deletePlayer.run(playerId);
+    });
+    deleteTactic.run(clubId);
+  });
+  transaction();
+
+  buildDefaultTacticForClub(clubId);
+}
+
 async function ensureHistoricalSeed() {
-  if (getMeta("seed_version") === "2") {
+  if (getMeta("seed_version") === HISTORICAL_SEED_VERSION) {
     return;
   }
 
   const imported = await importHistoricalSeason();
   writeSeedData(imported);
+  syncRuntimePlayersFromSeed();
+  const manager = getManager();
+  if (manager?.club_id) {
+    replaceRuntimeClubRosterFromSeed(manager.club_id);
+  }
+  refreshTransferMarket();
 }
 
 function getSeedClubList() {
@@ -1005,18 +1339,114 @@ function initializeRuntimeFromSeed(selectedClubId, managerName) {
   db.prepare(`
     INSERT INTO manager (
       id, manager_name, club_id, cash, board_confidence, ticket_price, stadium_capacity,
-      fan_mood, current_round, last_summary_json, job_status, language
-    ) VALUES (1, ?, ?, ?, 72, ?, ?, 68, 1, '[]', 'active', 'ru')
+      fan_mood, current_round, last_summary_json, job_status, language, trophies_json
+    ) VALUES (1, ?, ?, ?, 72, ?, ?, 68, 1, '[]', 'active', 'ru', '[]')
   `).run(managerName || "Legacy Manager", selectedClubId, selectedClub.balance, selectedClub.ticket_price, selectedClub.stadium_capacity);
 
   db.prepare("INSERT INTO finance_entries (amount, category, description, round_no) VALUES (?, 'board', ?, 0)")
     .run(selectedClub.balance, localize(`Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РІР‚вЂњР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂє Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р Р‹Р РЋРІР‚С”Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В  Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В РІР‚В Р В Р вЂ Р В РІР‚С™Р РЋРІР‚С”Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р Р‹Р РЋРІР‚С”Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В»Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В Р РЏР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂє Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В РІР‚В Р В Р вЂ Р В РІР‚С™Р РЋРІР‚С”Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†Р вЂљРЎвЂќР В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В±Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р Р†Р вЂљРЎвЂєР Р†Р вЂљРІР‚СљР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р Р‹Р РЋРІР‚С”Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В¶Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВµР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂє Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В  ${selectedClub.name}.`, `The board grants your opening budget at ${selectedClub.name}.`));
+
+  addMailItem(
+    "board",
+    localize("Добро пожаловать в клуб", "Welcome to the club"),
+    localize(`Совет директоров ${selectedClub.name} приветствует тебя. Стартовый бюджет уже доступен.`, `The ${selectedClub.name} board welcomes you. Your opening budget is ready.`),
+    0
+  );
+  addNewsItem(
+    "manager",
+    localize(`${managerName || "Legacy Manager"} возглавил ${selectedClub.name}`, `${managerName || "Legacy Manager"} takes charge of ${selectedClub.name}`),
+    localize(`${selectedClub.name} начинает сезон 2007/08 с новым менеджером.`, `${selectedClub.name} begin the 2007/08 season with a new manager.`),
+    0
+  );
 
   refreshTransferMarket();
 }
 
 function getManager() {
   return db.prepare("SELECT * FROM manager WHERE id = 1").get();
+}
+
+function readManagerTrophies() {
+  const manager = getManager();
+  if (!manager?.trophies_json) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(manager.trophies_json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function writeManagerTrophies(trophies) {
+  db.prepare("UPDATE manager SET trophies_json = ? WHERE id = 1").run(JSON.stringify(trophies || []));
+}
+
+function addNewsItem(category, title, body, roundNo = 0) {
+  db.prepare(`
+    INSERT INTO news_items (category, title, body, round_no)
+    VALUES (?, ?, ?, ?)
+  `).run(category, title, body, roundNo);
+}
+
+function addMailItem(category, subject, body, roundNo = 0) {
+  db.prepare(`
+    INSERT INTO manager_mail (category, subject, body, round_no, is_read)
+    VALUES (?, ?, ?, ?, 0)
+  `).run(category, subject, body, roundNo);
+}
+
+function getNewsFeed(limit = 18) {
+  return db.prepare(`
+    SELECT id, category, title, body, round_no AS roundNo, created_at AS createdAt
+    FROM news_items
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(limit);
+}
+
+function getManagerInbox(limit = 24) {
+  return db.prepare(`
+    SELECT id, category, subject, body, round_no AS roundNo, is_read AS isRead, created_at AS createdAt
+    FROM manager_mail
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(limit);
+}
+
+function awardManagerTrophy(key, competitionName, roundNo, extras = {}) {
+  const manager = getManager();
+  if (!manager) {
+    return false;
+  }
+  const trophies = readManagerTrophies();
+  if (trophies.some((entry) => entry.key === key)) {
+    return false;
+  }
+  const trophy = {
+    key,
+    competitionName,
+    season: SEASON_LABEL,
+    roundNo,
+    wonAt: new Date().toISOString(),
+    ...extras,
+  };
+  trophies.unshift(trophy);
+  writeManagerTrophies(trophies);
+  addMailItem(
+    "trophy",
+    localize(`Трофей: ${competitionName}`, `Trophy: ${competitionName}`),
+    localize(`Поздравляем. В твою коллекцию добавлен трофей "${competitionName}".`, `Congratulations. "${competitionName}" has been added to your manager record.`),
+    roundNo
+  );
+  addNewsItem(
+    "trophy",
+    localize(`${manager.manager_name} выиграл ${competitionName}`, `${manager.manager_name} wins ${competitionName}`),
+    localize(`Менеджер ${manager.manager_name} приносит клубу новый трофей.`, `Manager ${manager.manager_name} delivers new silverware.`),
+    roundNo
+  );
+  return true;
 }
 
 function getManagerClub() {
@@ -1444,6 +1874,9 @@ function getFullCalendar(clubId) {
 }
 
 function getTransferMarket(clubId) {
+  if (!isTransferWindowOpen()) {
+    return [];
+  }
   return db
     .prepare(`
       SELECT
@@ -1468,9 +1901,12 @@ function getTransferMarket(clubId) {
     .all(clubId);
 }
 
-function refreshTransferMarket() {
+function refreshTransferMarket(roundNo = null) {
   const managerClub = getManagerClub();
   db.exec("DELETE FROM transfer_market");
+  if (!isTransferWindowOpen(roundNo)) {
+    return;
+  }
   const candidates = db
     .prepare(`
       SELECT p.*, c.id AS sellerClubId
@@ -1519,11 +1955,12 @@ function evaluateOfferRatio(proposedFee, askingPrice) {
 }
 
 function submitTransferOffer(playerId, proposedFee) {
+  assertTransferWindowOpen();
   const manager = getManager();
   const buyerClub = getManagerClub();
   const listing = db.prepare("SELECT * FROM transfer_market WHERE player_id = ?").get(playerId);
   if (!listing) {
-    throw new Error("Player is no longer listed on the market.");
+    throw new Error(localize("Игрок больше не находится на рынке.", "Player is no longer listed on the market."));
   }
 
   const existing = db.prepare(`
@@ -1532,7 +1969,7 @@ function submitTransferOffer(playerId, proposedFee) {
     WHERE player_id = ? AND buyer_club_id = ? AND direction = 'buy' AND status IN ('pending', 'negotiating', 'accepted')
   `).get(playerId, buyerClub.id);
   if (existing) {
-    throw new Error("You already have an active offer for this player.");
+    throw new Error(localize("По этому игроку у тебя уже есть активное предложение.", "You already have an active offer for this player."));
   }
 
   const offer = Math.max(0, Math.round(Number(proposedFee) || 0));
@@ -1547,19 +1984,20 @@ function submitTransferOffer(playerId, proposedFee) {
     buyerClub.id,
     listing.asking_price,
     offer,
-    "Awaiting seller response.",
+    localize("Ожидается ответ продавца.", "Awaiting seller response."),
     manager.current_round,
     manager.current_round + 1
   );
-  addFinanceEntry(0, "transfer", `Bid submitted for a player: ${offer.toLocaleString("en-US")} EUR.`, manager.current_round);
+  addFinanceEntry(0, "transfer", localize(`Отправлено предложение по игроку: ${offer.toLocaleString("en-US")} EUR.`, `Bid submitted for a player: ${offer.toLocaleString("en-US")} EUR.`), manager.current_round);
 }
 
 function submitSaleOffer(playerId, askingPrice) {
+  assertTransferWindowOpen();
   const manager = getManager();
   const sellerClub = getManagerClub();
   const player = db.prepare("SELECT * FROM players WHERE id = ? AND club_id = ?").get(playerId, sellerClub.id);
   if (!player) {
-    throw new Error("Player does not belong to your club.");
+    throw new Error(localize("Этот игрок не принадлежит твоему клубу.", "Player does not belong to your club."));
   }
 
   const existing = db.prepare(`
@@ -1568,7 +2006,7 @@ function submitSaleOffer(playerId, askingPrice) {
     WHERE player_id = ? AND seller_club_id = ? AND direction = 'sell' AND status IN ('pending', 'negotiating', 'accepted')
   `).get(playerId, sellerClub.id);
   if (existing) {
-    throw new Error("There is already an active sale process for this player.");
+    throw new Error(localize("По этому игроку уже идет активный процесс продажи.", "There is already an active sale process for this player."));
   }
 
   const ask = Math.max(0, Math.round(Number(askingPrice) || player.value));
@@ -1582,11 +2020,11 @@ function submitSaleOffer(playerId, askingPrice) {
     sellerClub.id,
     ask,
     ask,
-    "Player listed for sale. Market response expected next round.",
+    localize("Игрок выставлен на продажу. Ответ рынка ожидается в следующем туре.", "Player listed for sale. Market response expected next round."),
     manager.current_round,
     manager.current_round + 1
   );
-  addFinanceEntry(0, "transfer", `Player listed for sale: ${player.name} for ${ask.toLocaleString("en-US")} EUR.`, manager.current_round);
+  addFinanceEntry(0, "transfer", localize(`Игрок выставлен на продажу: ${player.name} за ${ask.toLocaleString("en-US")} EUR.`, `Player listed for sale: ${player.name} for ${ask.toLocaleString("en-US")} EUR.`), manager.current_round);
 }
 
 function completeTransferOffer(offer) {
@@ -1595,36 +2033,59 @@ function completeTransferOffer(offer) {
   if (!player) {
     return;
   }
+  const fee = Math.max(0, Math.round(offer.response_fee || offer.proposed_fee || 0));
 
   if (offer.direction === "buy") {
-    if (manager.cash < offer.response_fee) {
-      throw new Error("Not enough cash to complete this transfer.");
+    if (manager.club_id === offer.buyer_club_id && manager.cash < fee) {
+      throw new Error(localize("Недостаточно денег для завершения трансфера.", "Not enough cash to complete this transfer."));
     }
     db.prepare("UPDATE players SET club_id = ?, morale = 75, fitness = MAX(fitness, 82) WHERE id = ?").run(offer.buyer_club_id, offer.player_id);
     db.prepare("DELETE FROM transfer_market WHERE player_id = ?").run(offer.player_id);
-    updateManagerFinancials({ cash: manager.cash - offer.response_fee });
-    addFinanceEntry(-offer.response_fee, "transfer", `Signed ${player.name} for ${offer.response_fee.toLocaleString("en-US")} EUR.`, manager.current_round);
+    adjustClubBalance(offer.buyer_club_id, -fee);
+    adjustClubBalance(offer.seller_club_id, fee);
+    if (manager.club_id === offer.buyer_club_id) {
+      addFinanceEntry(-fee, "transfer", `Signed ${player.name} for ${fee.toLocaleString("en-US")} EUR.`, manager.current_round);
+    }
   } else {
     const buyer = offer.buyer_club_id ? db.prepare("SELECT name FROM clubs WHERE id = ?").get(offer.buyer_club_id) : { name: "another club" };
     db.prepare("UPDATE players SET club_id = ?, morale = 68 WHERE id = ?").run(offer.buyer_club_id, offer.player_id);
-    updateManagerFinancials({ cash: manager.cash + offer.response_fee });
-    addFinanceEntry(offer.response_fee, "transfer", `Sold ${player.name} to ${buyer.name} for ${offer.response_fee.toLocaleString("en-US")} EUR.`, manager.current_round);
+    adjustClubBalance(offer.buyer_club_id, -fee);
+    adjustClubBalance(offer.seller_club_id, fee);
+    if (manager.club_id === offer.seller_club_id) {
+      addFinanceEntry(fee, "transfer", `Sold ${player.name} to ${buyer.name} for ${fee.toLocaleString("en-US")} EUR.`, manager.current_round);
+    }
   }
 
   db.prepare("UPDATE transfer_offers SET status = 'completed', message = ? WHERE id = ?")
-    .run("Transfer completed.", offer.id);
+    .run(localize("Трансфер завершен.", "Transfer completed."), offer.id);
+
+  addNewsItem(
+    "transfer",
+    localize(`Трансфер завершен: ${player.name}`, `Transfer completed: ${player.name}`),
+    localize(`${player.name} сменил клуб за ${formatMoney(fee)} EUR.`, `${player.name} changes clubs for ${formatMoney(fee)} EUR.`),
+    manager.current_round
+  );
+  if (manager.club_id === offer.buyer_club_id || manager.club_id === offer.seller_club_id) {
+    addMailItem(
+      "transfer",
+      localize(`Сделка по ${player.name} закрыта`, `${player.name} deal completed`),
+      localize(`Операция завершена. Сумма сделки: ${formatMoney(fee)} EUR.`, `The deal is complete. Transfer fee: ${formatMoney(fee)} EUR.`),
+      manager.current_round
+    );
+  }
 }
 
 function respondToTransferOffer(offerId, action, counterFee) {
   const manager = getManager();
   const offer = db.prepare("SELECT * FROM transfer_offers WHERE id = ?").get(offerId);
   if (!offer) {
-    throw new Error("Offer not found.");
+    throw new Error(localize("Предложение не найдено.", "Offer not found."));
   }
 
   if (action === "withdraw") {
     db.prepare("UPDATE transfer_offers SET status = 'withdrawn', message = ? WHERE id = ?")
-      .run("Offer withdrawn.", offer.id);
+      .run(localize("Предложение отозвано.", "Offer withdrawn."), offer.id);
+    addMailItem("transfer", localize("Переговоры остановлены", "Talks collapsed"), localize("Ты отозвал предложение по трансферу.", "You withdrew the transfer offer."), manager.current_round);
     return;
   }
 
@@ -1638,14 +2099,30 @@ function respondToTransferOffer(offerId, action, counterFee) {
   }
 
   if (action === "counter" && ["negotiating", "accepted"].includes(offer.status)) {
+    assertTransferWindowOpen();
     const fee = Math.max(0, Math.round(Number(counterFee) || 0));
+    if (offer.direction === "sell") {
+      db.prepare(`
+        UPDATE transfer_offers
+        SET status = 'pending', asking_price = ?, proposed_fee = ?, response_fee = NULL, message = ?, submitted_round = ?, response_round = ?
+        WHERE id = ?
+      `).run(
+        fee,
+        fee,
+        localize("Отправлено встречное требование. Ответ ожидается в следующем туре.", "Counter asking price submitted. Response due next round."),
+        manager.current_round,
+        manager.current_round + 1,
+        offer.id
+      );
+      return;
+    }
     db.prepare(`
       UPDATE transfer_offers
-      SET status = 'pending', proposed_fee = ?, message = ?, submitted_round = ?, response_round = ?
+      SET status = 'pending', proposed_fee = ?, response_fee = NULL, message = ?, submitted_round = ?, response_round = ?
       WHERE id = ?
     `).run(
       fee,
-      "Counter offer submitted. Response due next round.",
+      localize("Отправлено новое предложение. Ответ ожидается в следующем туре.", "Counter offer submitted. Response due next round."),
       manager.current_round,
       manager.current_round + 1,
       offer.id
@@ -1653,7 +2130,7 @@ function respondToTransferOffer(offerId, action, counterFee) {
     return;
   }
 
-  throw new Error("This action is not available for the current offer state.");
+  throw new Error(localize("Это действие недоступно для текущего статуса переговоров.", "This action is not available for the current offer state."));
 }
 
 function resolveTransferOffersForRound(roundNo) {
@@ -1668,69 +2145,409 @@ function resolveTransferOffersForRound(roundNo) {
     const player = db.prepare("SELECT * FROM players WHERE id = ?").get(offer.player_id);
     if (!player) {
       db.prepare("UPDATE transfer_offers SET status = 'rejected', message = ? WHERE id = ?")
-        .run("Player is no longer available.", offer.id);
+        .run(localize("Игрок больше недоступен.", "Player is no longer available."), offer.id);
       return;
     }
 
     if (offer.direction === "buy") {
       const ratio = evaluateOfferRatio(offer.proposed_fee, offer.asking_price);
       if (ratio < 0.55) {
+        const message = pickRandom([
+          localize("Продавец отказал без обсуждения.", "The seller refused without negotiations."),
+          localize("Клуб посчитал предложение несерьезным.", "The club considered the bid unserious."),
+          localize("Ответ пришел быстро: предложение даже не стали обсуждать.", "The answer came quickly: the bid was never considered."),
+        ]);
         db.prepare("UPDATE transfer_offers SET status = 'rejected', message = ? WHERE id = ?")
-          .run("Seller rejected immediately.", offer.id);
+          .run(message, offer.id);
+        addMailItem(
+          "transfer",
+          pickRandom([
+            localize("Трансфер отклонен", "Transfer rejected"),
+            localize("Переговоры сорвались", "Talks collapsed"),
+            localize("Клуб отказал", "Club says no"),
+          ]),
+          pickRandom([
+            localize(`${player.name}: клуб счел предложение несерьезным и сразу закрыл тему.`, `${player.name}: the seller saw the bid as unserious and shut the talks down.`),
+            localize(`${player.name}: на такую сумму продавец даже не стал торговаться.`, `${player.name}: at that price the selling club refused to negotiate.`),
+            localize(`${player.name}: ответ жесткий, предложение признано слишком слабым.`, `${player.name}: a firm answer, the bid was judged too weak.`),
+          ]),
+          roundNo
+        );
         return;
       }
       if (ratio < 0.78) {
+        const message = pickRandom([
+          localize("Предложение признано слишком низким.", "The bid was judged too low."),
+          localize("Продавец считает сумму ниже рыночной.", "The seller sees the fee below market value."),
+          localize("Ответ отрицательный: цена не устроила клуб.", "Negative reply: the fee did not satisfy the club."),
+        ]);
         db.prepare("UPDATE transfer_offers SET status = 'rejected', message = ? WHERE id = ?")
-          .run("Offer considered too low.", offer.id);
+          .run(message, offer.id);
+        addMailItem(
+          "transfer",
+          pickRandom([
+            localize("Трансфер отклонен", "Transfer rejected"),
+            localize("Цена не устроила продавца", "Seller rejected the valuation"),
+            localize("Недостаточное предложение", "Insufficient offer"),
+          ]),
+          pickRandom([
+            localize(`${player.name}: предложение оказалось слишком низким.`, `${player.name}: the bid was too low.`),
+            localize(`${player.name}: продавец ждет заметно большую сумму.`, `${player.name}: the seller expects a noticeably bigger fee.`),
+            localize(`${player.name}: текущая цена не убедила клуб начать сделку.`, `${player.name}: the current price was not enough to open a deal.`),
+          ]),
+          roundNo
+        );
         return;
       }
       if (ratio < 0.93) {
         const counter = Math.round((offer.asking_price + offer.proposed_fee) / 2);
+        const message = pickRandom([
+          localize(`Продавец готов торговаться и хочет ${counter.toLocaleString("en-US")} EUR.`, `The seller is open to negotiate and wants ${counter.toLocaleString("en-US")} EUR.`),
+          localize(`Клуб вернулся со встречной ценой: ${counter.toLocaleString("en-US")} EUR.`, `The club came back with a counter fee of ${counter.toLocaleString("en-US")} EUR.`),
+          localize(`Переговоры продолжаются: продавец настаивает на ${counter.toLocaleString("en-US")} EUR.`, `Talks continue: the seller is asking for ${counter.toLocaleString("en-US")} EUR.`),
+        ]);
         db.prepare(`
           UPDATE transfer_offers
           SET status = 'negotiating', response_fee = ?, message = ?
           WHERE id = ?
-        `).run(counter, `Seller is open to negotiate. They want ${counter.toLocaleString("en-US")} EUR.`, offer.id);
+        `).run(counter, message, offer.id);
+        addMailItem(
+          "transfer",
+          pickRandom([
+            localize("Есть встречная цена", "Counter offer received"),
+            localize("Переговоры продолжаются", "Talks are ongoing"),
+            localize("Продавец просит больше", "Seller wants more"),
+          ]),
+          pickRandom([
+            localize(`${player.name}: продавец готов обсуждать ${formatMoney(counter)} EUR.`, `${player.name}: the seller is willing to discuss ${formatMoney(counter)} EUR.`),
+            localize(`${player.name}: пришла встречная сумма, теперь мяч на твоей стороне.`, `${player.name}: a counter fee has arrived and the next move is yours.`),
+            localize(`${player.name}: сделка жива, но клуб хочет ${formatMoney(counter)} EUR.`, `${player.name}: the deal is alive, but the club want ${formatMoney(counter)} EUR.`),
+          ]),
+          roundNo
+        );
         return;
       }
+      const acceptedMessage = pickRandom([
+        localize("Предложение принято. Осталось только подтвердить сделку.", "Offer accepted. Only your confirmation remains."),
+        localize("Клуб согласился на твои условия. Можно закрывать сделку.", "The club accepted your terms. You can finalize the deal."),
+        localize("Сделка одобрена продавцом. Подтверди переход.", "The seller approved the move. Confirm the transfer."),
+      ]);
       db.prepare(`
         UPDATE transfer_offers
         SET status = 'accepted', response_fee = ?, message = ?
         WHERE id = ?
-      `).run(offer.proposed_fee, "Offer accepted. You can complete the transfer.", offer.id);
+      `).run(offer.proposed_fee, acceptedMessage, offer.id);
+      addMailItem(
+        "transfer",
+        pickRandom([
+          localize("Предложение принято", "Offer accepted"),
+          localize("Сделка согласована", "Deal agreed"),
+          localize("Можно завершать трансфер", "Ready to complete"),
+        ]),
+        pickRandom([
+          localize(`${player.name}: осталось только подтвердить сделку.`, `${player.name}: only your final approval remains.`),
+          localize(`${player.name}: клуб принял предложение и ждет твоего решения.`, `${player.name}: the club accepted the offer and now waits for you.`),
+          localize(`${player.name}: все согласовано, переход можно закрыть прямо сейчас.`, `${player.name}: everything is agreed and the move can be completed now.`),
+        ]),
+        roundNo
+      );
       return;
     }
 
-    const ratio = evaluateOfferRatio(offer.asking_price, player.value);
-    const buyerClub = db.prepare(`
-      SELECT id, name
-      FROM clubs
-      WHERE id != ? AND balance >= ? * 0.45
-      ORDER BY ABS(strength - ?) ASC, RANDOM()
-      LIMIT 1
-    `).get(offer.seller_club_id, offer.asking_price, player.overall);
+    const sellerAsk = Math.max(0, Math.round(offer.asking_price || offer.proposed_fee || player.value));
+    const ratio = evaluateOfferRatio(sellerAsk, player.value);
+    const buyerClub = offer.buyer_club_id
+      ? db.prepare(`
+        SELECT id, name
+        FROM clubs
+        WHERE id = ? AND id != ? AND balance >= ? * 0.45
+        LIMIT 1
+      `).get(offer.buyer_club_id, offer.seller_club_id, sellerAsk)
+      : db.prepare(`
+        SELECT id, name
+        FROM clubs
+        WHERE id != ? AND balance >= ? * 0.45
+        ORDER BY ABS(strength - ?) ASC, RANDOM()
+        LIMIT 1
+      `).get(offer.seller_club_id, sellerAsk, player.overall);
 
     if (!buyerClub || ratio > 1.45) {
+      const message = pickRandom([
+        localize("По этой цене подходящий покупатель не нашелся.", "No suitable buyer was found at that price."),
+        localize("Рынок остыл: по такой сумме никто не вышел на связь.", "The market cooled: nobody stepped in at that figure."),
+        localize("Слишком дорого для текущего спроса.", "The asking price is too high for the current market."),
+      ]);
       db.prepare("UPDATE transfer_offers SET status = 'rejected', message = ? WHERE id = ?")
-        .run("No suitable buyer found at this price.", offer.id);
+        .run(message, offer.id);
+      addMailItem(
+        "transfer",
+        pickRandom([
+          localize("Покупатель не найден", "No buyer found"),
+          localize("Рынок молчит", "The market stays quiet"),
+          localize("Никто не откликнулся", "No club responded"),
+        ]),
+        pickRandom([
+          localize(`${player.name}: по этой цене рынок не отреагировал.`, `${player.name}: the market did not move at that price.`),
+          localize(`${player.name}: клубы считают цену завышенной.`, `${player.name}: clubs see the price as too high.`),
+          localize(`${player.name}: интереса пока нет, возможно стоит снизить сумму.`, `${player.name}: there is no interest yet, you may need to lower the fee.`),
+        ]),
+        roundNo
+      );
       return;
     }
     if (ratio > 1.1) {
-      const counter = Math.round(Math.max(player.value * 0.92, offer.asking_price * 0.88));
+      const counter = Math.round(Math.max(player.value * 0.92, sellerAsk * 0.88));
+      const message = pickRandom([
+        localize(`${buyerClub.name} предлагает ${counter.toLocaleString("en-US")} EUR.`, `${buyerClub.name} offer ${counter.toLocaleString("en-US")} EUR.`),
+        localize(`${buyerClub.name} готов подписать игрока за ${counter.toLocaleString("en-US")} EUR.`, `${buyerClub.name} are willing to sign the player for ${counter.toLocaleString("en-US")} EUR.`),
+        localize(`${buyerClub.name} вышел со встречной ценой в ${counter.toLocaleString("en-US")} EUR.`, `${buyerClub.name} returned with a counter fee of ${counter.toLocaleString("en-US")} EUR.`),
+      ]);
       db.prepare(`
         UPDATE transfer_offers
         SET status = 'negotiating', buyer_club_id = ?, response_fee = ?, message = ?
         WHERE id = ?
-      `).run(buyerClub.id, counter, `${buyerClub.name} offer ${counter.toLocaleString("en-US")} EUR.`, offer.id);
+      `).run(buyerClub.id, counter, message, offer.id);
+      addMailItem(
+        "transfer",
+        pickRandom([
+          localize("Есть предложение по продаже", "Bid received for your player"),
+          localize("Поступила встречная цена", "A counter bid arrived"),
+          localize("На игрока вышел покупатель", "A buyer made contact"),
+        ]),
+        pickRandom([
+          localize(`${buyerClub.name} предлагает ${formatMoney(counter)} EUR за ${player.name}.`, `${buyerClub.name} offer ${formatMoney(counter)} EUR for ${player.name}.`),
+          localize(`${buyerClub.name} хочет купить ${player.name}, но по более низкой цене.`, `${buyerClub.name} want ${player.name}, but at a lower fee.`),
+          localize(`${buyerClub.name} включился в переговоры по ${player.name} и ждет ответа.`, `${buyerClub.name} entered talks for ${player.name} and now await your answer.`),
+        ]),
+        roundNo
+      );
       return;
     }
+    const acceptedSaleMessage = pickRandom([
+      localize(`${buyerClub.name} согласен купить игрока по твоей цене.`, `${buyerClub.name} accepted your asking price.`),
+      localize(`${buyerClub.name} одобрил условия сделки.`, `${buyerClub.name} approved the deal terms.`),
+      localize(`${buyerClub.name} готов сразу закрыть трансфер.`, `${buyerClub.name} are ready to close the transfer immediately.`),
+    ]);
     db.prepare(`
       UPDATE transfer_offers
       SET status = 'accepted', buyer_club_id = ?, response_fee = ?, message = ?
       WHERE id = ?
-    `).run(buyerClub.id, offer.asking_price, `${buyerClub.name} accepted your asking price.`, offer.id);
+    `).run(buyerClub.id, sellerAsk, acceptedSaleMessage, offer.id);
+    addMailItem(
+      "transfer",
+      pickRandom([
+        localize("Игрока готовы купить", "Buyer accepted your terms"),
+        localize("Спрос подтвержден", "Buyer accepted"),
+        localize("Можно продавать", "Sale ready"),
+      ]),
+      pickRandom([
+        localize(`${buyerClub.name} согласен купить ${player.name} по запрошенной цене.`, `${buyerClub.name} are ready to buy ${player.name} at your asking price.`),
+        localize(`${buyerClub.name} полностью устраивают условия по ${player.name}.`, `${buyerClub.name} are fully satisfied with the terms for ${player.name}.`),
+        localize(`${buyerClub.name} ждет только твоего подтверждения для продажи ${player.name}.`, `${buyerClub.name} only need your final approval to sign ${player.name}.`),
+      ]),
+      roundNo
+    );
   });
 }
+
+function simulateAiTransferActivity(roundNo) {
+  if (!isTransferWindowOpen(roundNo)) {
+    return;
+  }
+
+  const manager = getManager();
+  const managerClubId = manager?.club_id || -1;
+  const dealCount = 1 + Math.floor(Math.random() * 3);
+  const usedPlayers = new Set();
+
+  for (let index = 0; index < dealCount; index += 1) {
+    const buyer = db.prepare(`
+      SELECT id, name, strength, reputation, balance
+      FROM clubs
+      WHERE id != ? AND balance >= 4500000
+      ORDER BY RANDOM()
+      LIMIT 1
+    `).get(managerClubId);
+
+    if (!buyer) {
+      return;
+    }
+
+    const maxFee = Math.round(buyer.balance * 0.24);
+    const minOverall = clamp(Math.round(buyer.strength - 8 + Math.random() * 6), 62, 86);
+    const target = db.prepare(`
+      SELECT
+        p.id,
+        p.name,
+        p.overall,
+        p.value,
+        p.club_id AS sellerClubId,
+        seller.name AS sellerClubName
+      FROM players p
+      JOIN clubs seller ON seller.id = p.club_id
+      WHERE p.club_id != ? AND p.club_id != ? AND p.value <= ? AND p.overall >= ? AND p.age BETWEEN 18 AND 31
+      ORDER BY ABS(p.overall - ?) ASC, RANDOM()
+      LIMIT 1
+    `).get(buyer.id, managerClubId, maxFee, minOverall, buyer.strength);
+
+    if (!target || usedPlayers.has(target.id)) {
+      continue;
+    }
+
+    const seller = db.prepare("SELECT id, name FROM clubs WHERE id = ?").get(target.sellerClubId);
+    if (!seller || seller.id === buyer.id) {
+      continue;
+    }
+
+    const fee = Math.round(clamp(target.value * (0.92 + Math.random() * 0.24), target.value * 0.85, buyer.balance * 0.24));
+    if (fee < 500000 || buyer.balance < fee) {
+      continue;
+    }
+
+    usedPlayers.add(target.id);
+    db.prepare("UPDATE players SET club_id = ?, morale = 72, fitness = MAX(fitness, 80) WHERE id = ?").run(buyer.id, target.id);
+    db.prepare("DELETE FROM transfer_market WHERE player_id = ?").run(target.id);
+    adjustClubBalance(buyer.id, -fee);
+    adjustClubBalance(seller.id, fee);
+
+    addNewsItem(
+      "transfer",
+      pickRandom([
+        localize(`${buyer.name} оформил трансфер ${target.name}`, `${buyer.name} complete a deal for ${target.name}`),
+        localize(`${buyer.name} усиливается игроком ${target.name}`, `${buyer.name} strengthen with ${target.name}`),
+        localize(`${target.name} переходит в ${buyer.name}`, `${target.name} is heading to ${buyer.name}`),
+      ]),
+      pickRandom([
+        localize(`${seller.name} отпускает ${target.name} за ${formatMoney(fee)} EUR после коротких переговоров.`, `${seller.name} let ${target.name} go for ${formatMoney(fee)} EUR after short talks.`),
+        localize(`${buyer.name} убедил ${seller.name} продать ${target.name} за ${formatMoney(fee)} EUR.`, `${buyer.name} convinced ${seller.name} to sell ${target.name} for ${formatMoney(fee)} EUR.`),
+        localize(`Сделка между ${buyer.name} и ${seller.name} закрыта: ${target.name}, сумма ${formatMoney(fee)} EUR.`, `The deal between ${buyer.name} and ${seller.name} is done: ${target.name}, fee ${formatMoney(fee)} EUR.`),
+      ]),
+      roundNo
+    );
+  }
+}
+
+function simulateIncomingManagerOffers(roundNo) {
+  if (!isTransferWindowOpen(roundNo)) {
+    return;
+  }
+
+  const manager = getManager();
+  const managerClub = getManagerClub();
+  if (!manager || !managerClub) {
+    return;
+  }
+
+  const activePlayerIds = new Set(
+    db.prepare(`
+      SELECT player_id AS playerId
+      FROM transfer_offers
+      WHERE seller_club_id = ? AND status IN ('pending', 'negotiating', 'accepted')
+    `).all(managerClub.id).map((row) => row.playerId)
+  );
+
+  const candidates = db.prepare(`
+    SELECT id, name, position, overall, age, value, morale
+    FROM players
+    WHERE club_id = ? AND age BETWEEN 17 AND 31 AND overall >= 63 AND COALESCE(injury_games, 0) = 0
+    ORDER BY overall DESC, value DESC
+    LIMIT 18
+  `).all(managerClub.id).filter((player) => !activePlayerIds.has(player.id));
+
+  if (!candidates.length) {
+    return;
+  }
+
+  const offerCount = Math.min(candidates.length, Math.random() < 0.38 ? 0 : 1 + Math.floor(Math.random() * 2));
+  if (!offerCount) {
+    return;
+  }
+
+  const insertOffer = db.prepare(`
+    INSERT INTO transfer_offers (
+      direction, player_id, seller_club_id, buyer_club_id, status,
+      asking_price, proposed_fee, response_fee, message, submitted_round, response_round
+    ) VALUES ('sell', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+  `);
+
+  [...candidates]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, offerCount)
+    .forEach((player) => {
+      const buyer = db.prepare(`
+        SELECT id, name, strength, balance
+        FROM clubs
+        WHERE id != ? AND balance >= ?
+        ORDER BY ABS(strength - ?) ASC, RANDOM()
+        LIMIT 1
+      `).get(managerClub.id, Math.round(player.value * 0.72), player.overall);
+
+      if (!buyer) {
+        return;
+      }
+
+      const offerFee = Math.round(clamp(player.value * (0.82 + Math.random() * 0.3), player.value * 0.72, buyer.balance * 0.22));
+      if (offerFee < 350000 || buyer.balance < offerFee) {
+        return;
+      }
+
+      const status = offerFee >= player.value * 1.04 ? "accepted" : "negotiating";
+      const message = status === "accepted"
+        ? pickRandom([
+            localize(`${buyer.name} готов сразу платить ${formatMoney(offerFee)} EUR за ${player.name}.`, `${buyer.name} are ready to pay ${formatMoney(offerFee)} EUR immediately for ${player.name}.`),
+            localize(`${buyer.name} вышел с сильным предложением: ${formatMoney(offerFee)} EUR за ${player.name}.`, `${buyer.name} came in with a strong bid of ${formatMoney(offerFee)} EUR for ${player.name}.`),
+            localize(`${buyer.name} хочет быстро закрыть сделку по ${player.name} за ${formatMoney(offerFee)} EUR.`, `${buyer.name} want to close a quick deal for ${player.name} at ${formatMoney(offerFee)} EUR.`),
+          ])
+        : pickRandom([
+            localize(`${buyer.name} предлагает ${formatMoney(offerFee)} EUR за ${player.name} и ждет твоего ответа.`, `${buyer.name} offer ${formatMoney(offerFee)} EUR for ${player.name} and await your answer.`),
+            localize(`${buyer.name} проявил интерес к ${player.name}: стартовое предложение ${formatMoney(offerFee)} EUR.`, `${buyer.name} have shown interest in ${player.name}: opening bid ${formatMoney(offerFee)} EUR.`),
+            localize(`${buyer.name} начал переговоры по ${player.name} с отметки ${formatMoney(offerFee)} EUR.`, `${buyer.name} opened talks for ${player.name} at ${formatMoney(offerFee)} EUR.`),
+          ]);
+
+      insertOffer.run(
+        player.id,
+        managerClub.id,
+        buyer.id,
+        status,
+        player.value,
+        offerFee,
+        message,
+        roundNo - 1,
+        roundNo
+      );
+
+      addMailItem(
+        "transfer",
+        pickRandom([
+          localize(`Предложение по ${player.name}`, `Bid received for ${player.name}`),
+          localize(`На игрока есть спрос: ${player.name}`, `There is demand for ${player.name}`),
+          localize(`Клуб вышел на ${player.name}`, `A club moved for ${player.name}`),
+        ]),
+        pickRandom([
+          localize(`${buyer.name} предлагает ${formatMoney(offerFee)} EUR. Решение за тобой.`, `${buyer.name} offer ${formatMoney(offerFee)} EUR. The decision is yours.`),
+          localize(`${buyer.name} хочет подписать ${player.name}. Можно принять, поторговаться или свернуть переговоры.`, `${buyer.name} want to sign ${player.name}. You can accept, negotiate or walk away.`),
+          localize(`По ${player.name} пришел оффер от ${buyer.name}. Переговоры уже открыты.`, `${buyer.name} sent a bid for ${player.name}. Talks are now open.`),
+        ]),
+        roundNo
+      );
+
+      addNewsItem(
+        "transfer",
+        pickRandom([
+          localize(`${buyer.name} нацелился на ${player.name}`, `${buyer.name} target ${player.name}`),
+          localize(`Интерес к ${player.name} растет`, `Interest grows around ${player.name}`),
+          localize(`${buyer.name} сделал шаг по ${player.name}`, `${buyer.name} make their move for ${player.name}`),
+        ]),
+        pickRandom([
+          localize(`${buyer.name} открыл переговоры с оффера в ${formatMoney(offerFee)} EUR.`, `${buyer.name} opened talks with a ${formatMoney(offerFee)} EUR bid.`),
+          localize(`${player.name} оказался в центре внимания: ${buyer.name} уже на связи с клубом.`, `${player.name} is drawing attention as ${buyer.name} contact the club.`),
+          localize(`${buyer.name} изучает сделку по ${player.name} и готов обсуждать сумму ${formatMoney(offerFee)} EUR.`, `${buyer.name} are exploring a move for ${player.name} around ${formatMoney(offerFee)} EUR.`),
+        ]),
+        roundNo
+      );
+    });
+}
+
 function getSaveSnapshot() {
   return {
     leagues: db.prepare("SELECT * FROM leagues ORDER BY id").all(),
@@ -1742,6 +2559,8 @@ function getSaveSnapshot() {
     transferMarket: db.prepare("SELECT * FROM transfer_market ORDER BY player_id").all(),
     transferOffers: db.prepare("SELECT * FROM transfer_offers ORDER BY id").all(),
     financeEntries: db.prepare("SELECT * FROM finance_entries ORDER BY id").all(),
+    newsItems: db.prepare("SELECT * FROM news_items ORDER BY id").all(),
+    managerMail: db.prepare("SELECT * FROM manager_mail ORDER BY id").all(),
     liveMatch: db.prepare("SELECT * FROM live_match WHERE id = 1").get() || null,
   };
 }
@@ -1785,11 +2604,11 @@ function restoreRuntimeSnapshot(snapshot) {
     INSERT INTO players (
       id, club_id, name, position, secondary_positions, nationality, birth_date, hometown, age,
       overall, attack, defense, passing, stamina, goalkeeping, wage, value, morale, fitness,
-      goals, assists, yellow_cards, red_cards, appearances, starts, minutes
+      goals, assists, yellow_cards, red_cards, appearances, starts, minutes, injury_games, discipline_json
     ) VALUES (
       @id, @club_id, @name, @position, @secondary_positions, @nationality, @birth_date, @hometown, @age,
       @overall, @attack, @defense, @passing, @stamina, @goalkeeping, @wage, @value, @morale, @fitness,
-      @goals, @assists, @yellow_cards, @red_cards, @appearances, @starts, @minutes
+      @goals, @assists, @yellow_cards, @red_cards, @appearances, @starts, @minutes, @injury_games, @discipline_json
     )
   `);
   const insertClubTactics = db.prepare(`
@@ -1807,6 +2626,14 @@ function restoreRuntimeSnapshot(snapshot) {
       @weather_json, @referee, @attendance_estimate, @winner_club_id, @result_note
     )
   `);
+  const insertNewsItem = db.prepare(`
+    INSERT INTO news_items (id, category, title, body, round_no, created_at)
+    VALUES (@id, @category, @title, @body, @round_no, @created_at)
+  `);
+  const insertMailItem = db.prepare(`
+    INSERT INTO manager_mail (id, category, subject, body, round_no, is_read, created_at)
+    VALUES (@id, @category, @subject, @body, @round_no, @is_read, @created_at)
+  `);
 
   const transaction = db.transaction(() => {
     snapshot.leagues.forEach((row) => insertLeague.run(row));
@@ -1814,15 +2641,17 @@ function restoreRuntimeSnapshot(snapshot) {
     snapshot.players.forEach((row) => insertPlayer.run(row));
     snapshot.clubTactics.forEach((row) => insertClubTactics.run(row));
     snapshot.fixtures.forEach((row) => insertFixture.run(row));
+    (snapshot.newsItems || []).forEach((row) => insertNewsItem.run(row));
+    (snapshot.managerMail || []).forEach((row) => insertMailItem.run(row));
 
     if (snapshot.manager) {
       db.prepare(`
         INSERT INTO manager (
           id, manager_name, club_id, cash, board_confidence, ticket_price, stadium_capacity,
-          fan_mood, current_round, last_summary_json, job_status, language
+          fan_mood, current_round, last_summary_json, job_status, language, trophies_json
         ) VALUES (
           @id, @manager_name, @club_id, @cash, @board_confidence, @ticket_price, @stadium_capacity,
-          @fan_mood, @current_round, @last_summary_json, @job_status, @language
+          @fan_mood, @current_round, @last_summary_json, @job_status, @language, @trophies_json
         )
       `).run(snapshot.manager);
     }
@@ -1973,6 +2802,7 @@ function buildState() {
   }
 
   const club = getManagerClub();
+  const transferWindow = getTransferWindowStatus();
   ensureRuntimeCompetitions();
   const league = db.prepare("SELECT * FROM leagues WHERE id = ?").get(club.league_id);
   const table = computeLeagueTable(club.league_id);
@@ -1994,12 +2824,14 @@ function buildState() {
           name: player.name,
           position: player.position,
           overall: player.overall,
+          morale: player.morale,
         })),
         awayLineup: buildMatchTeam(nextFixture.away_club_id, { humanControlled: nextFixture.away_club_id === club.id, competitionType: nextFixture.competition_type }).starters.map((player) => ({
           id: player.id,
           name: player.name,
           position: player.position,
           overall: player.overall,
+          morale: player.morale,
         })),
       }
     : null;
@@ -2017,6 +2849,7 @@ function buildState() {
       currentRound: manager.current_round,
       jobStatus: manager.job_status,
       language: manager.language || "ru",
+      trophies: readManagerTrophies(),
     },
     club: {
       id: club.id,
@@ -2026,7 +2859,7 @@ function buildState() {
       leagueName: league.name,
       tier: league.tier,
       strength: club.strength,
-      balance: club.balance,
+      balance: manager.cash,
       boardExpectation: club.board_expectation,
       logoPrimary: club.logo_primary,
       logoSecondary: club.logo_secondary,
@@ -2048,12 +2881,16 @@ function buildState() {
     calendar: getFullCalendar(club.id),
     leagueTable: table,
     topScorers: getTopScorers(club.league_id),
-    transferMarket: getTransferMarket(club.id),
+    transferWindowOpen: transferWindow.open,
+    transferWindowDate: transferWindow.date,
+    transferMarket: transferWindow.open ? getTransferMarket(club.id) : [],
     transferOffers: getTransferOffers(club.id),
     finance: {
       wageBill: getWageBill(club.id),
       stadiumCapacity: manager.stadium_capacity,
       nextUpgradeCost: Math.round(1400000 + manager.stadium_capacity * 55),
+      campAvailable: !hasTrainingCampThisRound(manager.current_round),
+      campUsedThisRound: hasTrainingCampThisRound(manager.current_round),
       recentEntries: getRecentFinanceEntries(),
       camps: [
         { id: "madrid", name: localize("Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РІР‚вЂњР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В±Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС› Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В  Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р Р‹Р РЋРІР‚С”Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р Р‹Р РЋРІР‚С”Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’Вµ", "Madrid Camp"), cost: 650000, effect: localize("+Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В»Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р вЂ™Р’В°, +Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРІР‚СњР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В·Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’ВР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°, Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В¬Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРЎв„ў Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В° Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В Р вЂ№Р В Р вЂ Р В РІР‚С™Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂє Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В¦Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р Р†РІР‚С›РЎС›Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В°Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћвЂ“Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В РІР‚В Р В Р вЂ Р В РІР‚С™Р РЋРІР‚С”Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРЎв„ўР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р РЋРІР‚С”Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В ", "+morale, +fitness, chance for skill growth") },
@@ -2065,6 +2902,8 @@ function buildState() {
       message: buildBoardMessage(manager, club, table),
       confidence: manager.board_confidence,
     },
+    news: getNewsFeed(),
+    mail: getManagerInbox(),
     liveMatch: liveMatchRow ? JSON.parse(liveMatchRow.state_json) : null,
     roundSummary: JSON.parse(manager.last_summary_json || "[]"),
     competitionOverview: getCompetitionOverview(club),
@@ -2121,7 +2960,7 @@ function updateManagerFinancials(updates) {
   const manager = getManager();
   db.prepare(`
     UPDATE manager
-    SET cash = ?, board_confidence = ?, ticket_price = ?, stadium_capacity = ?, fan_mood = ?, current_round = ?, last_summary_json = ?, job_status = ?, language = ?
+    SET cash = ?, board_confidence = ?, ticket_price = ?, stadium_capacity = ?, fan_mood = ?, current_round = ?, last_summary_json = ?, job_status = ?, language = ?, trophies_json = ?
     WHERE id = 1
   `).run(
     updates.cash ?? manager.cash,
@@ -2132,7 +2971,8 @@ function updateManagerFinancials(updates) {
     updates.currentRound ?? manager.current_round,
     updates.lastSummaryJson ?? manager.last_summary_json,
     updates.jobStatus ?? manager.job_status,
-    updates.language ?? manager.language ?? "ru"
+    updates.language ?? manager.language ?? "ru",
+    updates.trophiesJson ?? manager.trophies_json ?? "[]"
   );
 }
 
@@ -2180,6 +3020,9 @@ function sendTrainingCamp(campId) {
 
   const manager = getManager();
   const club = getManagerClub();
+  if (hasTrainingCampThisRound(manager.current_round)) {
+    throw new Error(localize("Тренировочный сбор уже использован в этом туре.", "You have already used a training camp this round."));
+  }
   if (manager.cash < camp.cost) {
     throw new Error(localize("Недостаточно денег на этот сбор.", "Not enough cash for this training camp."));
   }
@@ -2296,12 +3139,31 @@ function getFixtureById(fixtureId) {
 function estimateLiveAttendance(fixture, homeClub, awayClub, managerClubId, table) {
   const homeRow = table.find((row) => row.clubId === homeClub.id);
   const awayRow = table.find((row) => row.clubId === awayClub.id);
-  const titlePull = clamp((homeClub.reputation + awayClub.reputation) / 220, 0.7, 1.25);
-  const rankingPull = clamp(1.05 - ((homeRow?.rank || 10) - 1) * 0.02, 0.72, 1.08);
-  const rivalryBoost = Math.abs(homeClub.reputation - awayClub.reputation) < 6 ? 1.04 : 1;
-  const competitionBoost = ["champions", "uefa"].includes(fixture.competition_type) ? 1.18 : fixture.competition_type === "cup" ? 1.08 : 1;
-  const managerBoost = managerClubId === homeClub.id ? 1.06 : 1;
-  return Math.round(homeClub.stadium_capacity * clamp(0.46 * titlePull * rankingPull * rivalryBoost * competitionBoost * managerBoost, 0.35, 0.99));
+  const homeTopBoost = clamp(1.1 - ((homeRow?.rank || 12) - 1) * 0.025, 0.68, 1.14);
+  const awayDraw = clamp(0.78 + awayClub.reputation / 170 + (awayRow && awayRow.rank <= 4 ? 0.08 : 0), 0.72, 1.18);
+  const bigMatchBoost =
+    homeClub.reputation >= 82 && awayClub.reputation >= 80 ? 1.14 :
+    homeClub.reputation >= 78 && awayClub.reputation >= 74 ? 1.08 :
+    1;
+  const oppositionDrag = awayClub.reputation <= 60 && fixture.competition_type === "league" ? 0.9 : 1;
+  const competitionBoost =
+    fixture.competition_type === "champions" ? 1.28 :
+    fixture.competition_type === "uefa" ? 1.18 :
+    fixture.competition_type === "cup" ? 1.08 :
+    1;
+  const managerBoost = managerClubId === homeClub.id ? 1.08 : 1;
+  const stageBoost = fixture.competition_stage === "Final" ? 1.12 : String(fixture.competition_stage || "").includes("Semi") ? 1.07 : 1;
+  const baseline =
+    0.38 *
+    clamp((homeClub.reputation + awayClub.reputation) / 170, 0.76, 1.24) *
+    homeTopBoost *
+    awayDraw *
+    bigMatchBoost *
+    oppositionDrag *
+    competitionBoost *
+    managerBoost *
+    stageBoost;
+  return Math.round(homeClub.stadium_capacity * clamp(baseline, 0.28, 0.995));
 }
 
 function resolveKnockoutWinner(fixture, state) {
@@ -2374,17 +3236,35 @@ function applyDisciplineAndInjuries(fixture, state, playerEvents) {
     const eventSummary = playerEvents[playerId] || { yellow: 0, yellowAccumulation: 0, red: 0 };
     const discipline = readDisciplineState(player);
     const competitionState = discipline[competitionType];
+    const managerClub = getManagerClub();
+    const managerPlayer = managerClub && Number(player.club_id) === Number(managerClub.id);
 
     if (eventSummary.yellowAccumulation > 0) {
       competitionState.yellow += eventSummary.yellowAccumulation;
       if (competitionState.yellow >= 4) {
         competitionState.yellow = 0;
         competitionState.suspension += 1;
+        if (managerPlayer) {
+          addMailItem(
+            "discipline",
+            localize(`Дисквалификация: ${player.name}`, `Suspension: ${player.name}`),
+            localize(`${player.name} пропустит следующий матч турнира из-за перебора желтых карточек.`, `${player.name} will miss the next match in this competition due to yellow-card accumulation.`),
+            fixture.round_no
+          );
+        }
       }
     }
 
     if (eventSummary.red > 0) {
       competitionState.suspension += eventSummary.red;
+      if (managerPlayer) {
+        addMailItem(
+          "discipline",
+          localize(`Удаление: ${player.name}`, `Red card: ${player.name}`),
+          localize(`${player.name} удален и автоматически пропустит следующий матч этого турнира.`, `${player.name} was sent off and will miss the next match in this competition.`),
+          fixture.round_no
+        );
+      }
     }
 
     let injuryGames = Number(player.injury_games || 0);
@@ -2422,6 +3302,14 @@ function applyDisciplineAndInjuries(fixture, state, playerEvents) {
       JSON.stringify(readDisciplineState(storedPlayer)),
       injured.id
     );
+    if (Number(injured.club_id) === Number(getManagerClub()?.id)) {
+      addMailItem(
+        "injury",
+        localize(`Травма: ${injured.name}`, `Injury: ${injured.name}`),
+        localize(`${injured.name} выбыл примерно на ${injuryGames} матч(а).`, `${injured.name} is expected to miss around ${injuryGames} match(es).`),
+        fixture.round_no
+      );
+    }
   }
 }
 
@@ -2520,7 +3408,7 @@ function applyMatchOutcome(fixture, state) {
         events.yellow,
         events.red,
         90,
-        clamp((player.morale || 70) + moraleDelta, 45, 96),
+        clamp((player.morale || 70) + moraleDelta, 30, 96),
         clamp((player.fitness || 90) - 7, 55, 95),
         economics.value,
         economics.wage,
@@ -2533,7 +3421,7 @@ function applyMatchOutcome(fixture, state) {
       .forEach((entry) => {
         updateBenchPlayer.run(
           Math.max(1, 90 - entry.minute),
-          clamp(72 + moraleDelta, 48, 95),
+          clamp(72 + moraleDelta, 35, 95),
           clamp(88 - Math.max(2, Math.round((90 - entry.minute) / 8)), 60, 95),
           entry.playerInId
         );
@@ -2761,6 +3649,177 @@ function progressKnockoutCompetitions(roundNo) {
     insertKnockoutRound(fixturesToInsert);
   });
 }
+
+function maybeAwardCompetitionTrophies(roundNo) {
+  const manager = getManager();
+  const club = getManagerClub();
+  if (!manager || !club) {
+    return;
+  }
+
+  const leaguePending = db.prepare(
+    "SELECT COUNT(*) AS count FROM fixtures WHERE competition_type = 'league' AND league_id = ? AND status = 'pending'"
+  ).get(club.league_id)?.count || 0;
+  if (leaguePending === 0) {
+    const table = computeLeagueTable(club.league_id);
+    if (table[0]?.clubId === club.id) {
+      awardManagerTrophy(`league:${club.league_id}:${SEASON_LABEL}`, db.prepare("SELECT name FROM leagues WHERE id = ?").get(club.league_id)?.name || localize("Лига", "League"), roundNo, { type: "league" });
+    }
+  }
+
+  const finals = db.prepare(`
+    SELECT competition_type AS competitionType, competition_name AS competitionName, winner_club_id AS winnerClubId
+    FROM fixtures
+    WHERE status = 'played' AND competition_stage = 'Final' AND winner_club_id = ?
+  `).all(club.id);
+
+  finals.forEach((entry) => {
+    awardManagerTrophy(
+      `${entry.competitionType}:${entry.competitionName}:${SEASON_LABEL}`,
+      entry.competitionName,
+      roundNo,
+      { type: entry.competitionType }
+    );
+  });
+}
+
+function publishRoundDigest(fixture, state, roundSummary, managerWon, managerLost) {
+  const manager = getManager();
+  const club = getManagerClub();
+  if (!manager || !club) {
+    return;
+  }
+
+  const opponentName = fixture.home_club_id === club.id
+    ? db.prepare("SELECT name FROM clubs WHERE id = ?").get(fixture.away_club_id)?.name
+    : db.prepare("SELECT name FROM clubs WHERE id = ?").get(fixture.home_club_id)?.name;
+  const managerScore = fixture.home_club_id === club.id
+    ? `${state.score.home}-${state.score.away}`
+    : `${state.score.away}-${state.score.home}`;
+  const competitionName = normalizeCompetitionName(fixture.competition_name, fixture.competition_type, club.country);
+  const headline = managerWon
+    ? pickRandom([
+        localize(`${club.name} берет три очка`, `${club.name} take three points`),
+        localize(`${club.name} празднует победу`, `${club.name} celebrate another win`),
+        localize(`${club.name} проходит соперника`, `${club.name} get the better of their rivals`),
+      ])
+    : managerLost
+      ? pickRandom([
+          localize(`${club.name} оступается`, `${club.name} stumble`),
+          localize(`${club.name} терпит поражение`, `${club.name} suffer defeat`),
+          localize(`${club.name} остается без очков`, `${club.name} come away empty-handed`),
+        ])
+      : pickRandom([
+          localize(`${club.name} делит очки`, `${club.name} share the points`),
+          localize(`${club.name} играет вничью`, `${club.name} settle for a draw`),
+          localize(`${club.name} не дожимает матч`, `${club.name} are held`),
+        ]);
+  const body = pickRandom([
+    localize(`${manager.manager_name} завершает встречу против ${opponentName} со счетом ${managerScore} в турнире "${competitionName}".`, `${manager.manager_name} closes out a ${managerScore} result against ${opponentName} in "${competitionName}".`),
+    localize(`${club.name} проводит еще один матч сезона 2007/08, а итог против ${opponentName} - ${managerScore}.`, `${club.name} add another 2007/08 fixture, ending ${managerScore} against ${opponentName}.`),
+    localize(`Команда ${manager.manager_name} получает результат ${managerScore} против ${opponentName}.`, `${manager.manager_name}'s side record a ${managerScore} outcome against ${opponentName}.`),
+  ]);
+  addNewsItem("match", headline, body, fixture.round_no);
+
+  roundSummary
+    .filter((match) => match.id !== fixture.id)
+    .slice(0, 3)
+    .forEach((match) => {
+      addNewsItem(
+        "round",
+        pickRandom([
+          localize(`${match.homeClubName} ${match.homeScore}-${match.awayScore} ${match.awayClubName}`, `${match.homeClubName} ${match.homeScore}-${match.awayScore} ${match.awayClubName}`),
+          localize(`Финальный счет: ${match.homeClubName} ${match.homeScore}-${match.awayScore} ${match.awayClubName}`, `Full time: ${match.homeClubName} ${match.homeScore}-${match.awayScore} ${match.awayClubName}`),
+          localize(`${match.homeClubName} и ${match.awayClubName} завершили матч ${match.homeScore}-${match.awayScore}`, `${match.homeClubName} and ${match.awayClubName} finished ${match.homeScore}-${match.awayScore}`),
+        ]),
+        pickRandom([
+          localize(`Еще один результат тура в турнире "${match.competitionName || fixture.competition_name}".`, `Another result from "${match.competitionName || fixture.competition_name}".`),
+          localize(`Параллельный матч игрового дня тоже завершен.`, `Another fixture from the same matchday is in the books.`),
+          localize(`Обзор тура пополняется еще одним счетом.`, `The round-up gains another completed scoreline.`),
+        ]),
+        fixture.round_no
+      );
+    });
+
+  addMailItem(
+    "board",
+    pickRandom([
+      localize("Отчет по туру", "Board round report"),
+      localize("Резюме игрового дня", "Matchday summary"),
+      localize("Записка от совета директоров", "Board memo"),
+    ]),
+    pickRandom([
+      localize(`Совет директоров зафиксировал счет ${managerScore} в турнире "${competitionName}". Уровень доверия сейчас ${getManager().board_confidence}.`, `The board logged a ${managerScore} result in "${competitionName}". Confidence now stands at ${getManager().board_confidence}.`),
+      localize(`После матча с ${opponentName} совет оценил текущее положение клуба. Доверие: ${getManager().board_confidence}.`, `After the match with ${opponentName}, the board reassessed the club's situation. Confidence: ${getManager().board_confidence}.`),
+      localize(`Итог встречи ${managerScore} уже занесен в отчетность. Совет держит доверие на уровне ${getManager().board_confidence}.`, `The ${managerScore} result is now on record. The board keeps confidence at ${getManager().board_confidence}.`),
+    ]),
+    fixture.round_no
+  );
+}
+
+function getRecentClubResults(clubId, limit = 5) {
+  return db.prepare(`
+    SELECT home_club_id, away_club_id, home_score, away_score
+    FROM fixtures
+    WHERE status = 'played'
+      AND (home_club_id = ? OR away_club_id = ?)
+    ORDER BY round_no DESC, id DESC
+    LIMIT ?
+  `).all(clubId, clubId, limit);
+}
+
+function calculateClubMoraleTrend(clubId, scored, conceded, managerWon, managerLost) {
+  const recentResults = getRecentClubResults(clubId, 5);
+  const recentLosses = recentResults.filter((fixture) => {
+    const wasHome = Number(fixture.home_club_id) === Number(clubId);
+    const goalsFor = wasHome ? Number(fixture.home_score || 0) : Number(fixture.away_score || 0);
+    const goalsAgainst = wasHome ? Number(fixture.away_score || 0) : Number(fixture.home_score || 0);
+    return goalsFor < goalsAgainst;
+  }).length;
+
+  const losingMargin = Math.max(0, conceded - scored);
+  let moraleDelta = 0;
+
+  if (managerWon) {
+    moraleDelta += scored - conceded >= 3 ? 2 : 1;
+  } else if (managerLost) {
+    moraleDelta -= 1;
+  }
+
+  if (losingMargin >= 2) {
+    moraleDelta -= 1;
+  }
+  if (losingMargin >= 4) {
+    moraleDelta -= 2;
+  }
+  if (losingMargin >= 5) {
+    moraleDelta -= 1;
+  }
+
+  if (recentLosses >= 3) {
+    moraleDelta -= 1;
+  }
+  if (recentLosses >= 4) {
+    moraleDelta -= 1;
+  }
+  if (recentLosses === 5) {
+    moraleDelta -= 1;
+  }
+
+  return clamp(moraleDelta, -6, 3);
+}
+
+function applyClubMoraleTrend(clubId, moraleDelta) {
+  if (!moraleDelta) {
+    return;
+  }
+  db.prepare(`
+    UPDATE players
+    SET morale = MIN(96, MAX(30, morale + ?))
+    WHERE club_id = ?
+  `).run(moraleDelta, clubId);
+}
+
 function updateManagerAfterRound(fixture, state) {
   const manager = getManager();
   const club = getManagerClub();
@@ -2853,6 +3912,13 @@ function updateManagerAfterRound(fixture, state) {
     lastSummaryJson: JSON.stringify(roundSummary),
     jobStatus,
   });
+
+  applyClubMoraleTrend(
+    club.id,
+    calculateClubMoraleTrend(club.id, scored, conceded, managerWon, managerLost)
+  );
+  publishRoundDigest(fixture, state, roundSummary, managerWon, managerLost);
+  maybeAwardCompetitionTrophies(fixture.round_no);
 }
 
 function startLiveMatch() {
@@ -2931,13 +3997,18 @@ function startLiveMatch() {
 function finalizeFinishedLiveMatch(row, state) {
   if (!state.roundProcessed) {
     const fixture = getFixtureById(row.fixture_id);
+    const nextRound = fixture.round_no + 1;
     applyMatchOutcome(fixture, state);
     simulateOtherFixturesForRound(fixture.round_no, fixture.id);
     progressKnockoutCompetitions(fixture.round_no);
-    resolveTransferOffersForRound(fixture.round_no + 1);
+    resolveTransferOffersForRound(nextRound);
+    simulateAiTransferActivity(nextRound);
+    simulateIncomingManagerOffers(nextRound);
     updateManagerAfterRound(fixture, state);
-    if (fixture.round_no % 5 === 0) {
-      refreshTransferMarket();
+    if (!isTransferWindowOpen(nextRound)) {
+      refreshTransferMarket(nextRound);
+    } else if (fixture.round_no % 4 === 0 || (db.prepare("SELECT COUNT(*) AS count FROM transfer_market").get()?.count || 0) < 18) {
+      refreshTransferMarket(nextRound);
     }
     state.roundProcessed = true;
   }

@@ -20,6 +20,8 @@ const I18N = {
     market: "Рынок",
     finance: "Финансы",
     season: "Сезон",
+    news: "Новости",
+    mail: "Почта",
     match: "Матч",
     cash: "Деньги",
     ticket: "Билет",
@@ -112,6 +114,20 @@ const I18N = {
     result: "Результат",
     fastFinished: "Матч досчитан",
     matchEvents: "События матча",
+    chooseLeagueSlide: "1. Лига",
+    chooseClubSlide: "2. Команда",
+    managerFirst: "Сначала впиши имя менеджера",
+    leagueSlideHint: "Листай лиги стрелками",
+    clubSlideHint: "Листай клубы стрелками",
+    resolveMoment: "Разыграть эпизод",
+    latestNews: "Новости сезона",
+    managerMail: "Письма менеджеру",
+    trophies: "Трофеи",
+    emptyInbox: "Писем пока нет",
+    noNews: "Новостей пока нет",
+    keyMoment: "Ключевой эпизод",
+    primaryChoice: "Решение",
+    secondaryChoice: "Сила/вариант",
   },
   en: {
     refresh: "Refresh",
@@ -129,6 +145,8 @@ const I18N = {
     market: "Market",
     finance: "Finance",
     season: "Season",
+    news: "News",
+    mail: "Mail",
     match: "Match",
     cash: "Cash",
     ticket: "Ticket",
@@ -221,6 +239,20 @@ const I18N = {
     result: "Result",
     fastFinished: "Match fast-forwarded",
     matchEvents: "Match events",
+    chooseLeagueSlide: "1. League",
+    chooseClubSlide: "2. Club",
+    managerFirst: "Start with your manager name",
+    leagueSlideHint: "Use arrows to switch leagues",
+    clubSlideHint: "Use arrows to switch clubs",
+    resolveMoment: "Play the moment",
+    latestNews: "Season news",
+    managerMail: "Manager inbox",
+    trophies: "Trophies",
+    emptyInbox: "No mail yet",
+    noNews: "No news yet",
+    keyMoment: "Key moment",
+    primaryChoice: "Decision",
+    secondaryChoice: "Power/variant",
   },
 };
 
@@ -287,6 +319,7 @@ const ui = {
   showAllCups: false,
   selectedLineupSlot: null,
   startingCareer: false,
+  managerNameDraft: localStorage.getItem("lfm-manager-name") || "Legacy Manager",
 };
 
 function t(key) {
@@ -489,15 +522,36 @@ function financeEntryDescription(entry) {
 }
 
 function transferOfferMessage(offer) {
-  const fallbackByStatus = {
-    pending: "Awaiting response.",
-    negotiating: "Counter terms received.",
-    accepted: "Offer accepted. Confirm to complete.",
-    completed: "Transfer completed.",
-    rejected: "Offer rejected.",
-    withdrawn: "Offer withdrawn.",
+  const fallbackByStatus = ui.language === "ru"
+    ? {
+        pending: "Ожидается ответ.",
+        negotiating: "Получено встречное условие.",
+        accepted: "Предложение принято. Подтверди сделку.",
+        completed: "Трансфер завершен.",
+        rejected: "Предложение отклонено.",
+        withdrawn: "Предложение отозвано.",
+      }
+    : {
+        pending: "Awaiting response.",
+        negotiating: "Counter terms received.",
+        accepted: "Offer accepted. Confirm to complete.",
+        completed: "Transfer completed.",
+        rejected: "Offer rejected.",
+        withdrawn: "Offer withdrawn.",
+      };
+  const englishCleanup = {
+    "Awaiting seller response.": "Ожидается ответ продавца.",
+    "Player listed for sale. Market response expected next round.": "Игрок выставлен на продажу. Ответ рынка ожидается в следующем туре.",
+    "Offer withdrawn.": "Предложение отозвано.",
+    "Offer accepted. You can complete the transfer.": "Предложение принято. Можно завершать сделку.",
+    "Transfer completed.": "Трансфер завершен.",
+    "Player is no longer available.": "Игрок больше недоступен.",
   };
-  return cleanUiText(offer.message, fallbackByStatus[offer.status] || "");
+  const cleaned = cleanUiText(offer.message, fallbackByStatus[offer.status] || "");
+  if (ui.language === "ru" && englishCleanup[cleaned]) {
+    return englishCleanup[cleaned];
+  }
+  return cleaned;
 }
 function boardExpectationText(text = "") {
   const value = cleanUiText(text, "");
@@ -521,6 +575,25 @@ function initials(name = "") {
 
 function badge(name, primary, secondary, tiny = false) {
   return `<div class="logo-badge ${tiny ? "tiny-badge" : ""}" style="background:linear-gradient(135deg, ${primary}, ${secondary})">${initials(name)}</div>`;
+}
+
+function hashHue(seed = "") {
+  return [...String(seed)].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
+}
+
+function leagueBadge(leagueKey) {
+  const [country, name] = String(leagueKey || "").split("__");
+  const hue = hashHue(leagueKey);
+  const primary = `hsl(${hue} 70% 48%)`;
+  const secondary = `hsl(${(hue + 32) % 360} 72% 34%)`;
+  return badge(`${country || ""} ${name || ""}`.trim(), primary, secondary);
+}
+
+function cycleIndex(length, currentIndex, delta) {
+  if (!length) {
+    return 0;
+  }
+  return (currentIndex + delta + length) % length;
 }
 
 function showToast(message) {
@@ -599,6 +672,14 @@ function playerById(id) {
   return allSquadPlayers().find((player) => player.id === id);
 }
 
+function moraleText(player) {
+  return `${ui.language === "ru" ? "мораль" : "morale"} ${Math.round(player?.morale ?? 70)}`;
+}
+
+function playerSummaryLine(player) {
+  return `${player.position} - ${player.overall} • ${moraleText(player)}`;
+}
+
 async function changeLanguage(language) {
   ui.language = language === "ru" ? "ru" : "en";
   localStorage.setItem("lfm-lang", ui.language);
@@ -642,47 +723,72 @@ function toolbarView() {
 function renderSetup() {
   bottomNav.classList.add("hidden");
   const groups = leagueGroups(ui.state.clubs);
-  const leagueKeys = Object.keys(groups);
-  ui.selectedLeague = ui.selectedLeague || leagueKeys[0];
-  const teams = groups[ui.selectedLeague] || [];
-  ui.selectedClubId = ui.selectedClubId || teams[0]?.id;
+  const leagueKeys = Object.keys(groups).sort((left, right) => left.localeCompare(right));
+  ui.selectedLeague = leagueKeys.includes(ui.selectedLeague) ? ui.selectedLeague : leagueKeys[0];
+  const leagueIndex = Math.max(0, leagueKeys.indexOf(ui.selectedLeague));
+  const teams = [...(groups[ui.selectedLeague] || [])].sort((left, right) => right.strength - left.strength || left.name.localeCompare(right.name));
+  ui.selectedClubId = teams.some((club) => club.id === ui.selectedClubId) ? ui.selectedClubId : teams[0]?.id;
+  const clubIndex = Math.max(0, teams.findIndex((club) => club.id === ui.selectedClubId));
+  const selectedClub = teams[clubIndex] || teams[0];
   const [, leagueName] = ui.selectedLeague.split("__");
+  const managerName = ui.managerNameDraft || "Legacy Manager";
 
   app.innerHTML = `
     ${toolbarView()}
-    <section class="setup-card">
+    <section class="setup-card career-setup-card">
       <p class="eyebrow">${t("newCareer")}</p>
       ${ui.startingCareer ? `<div class="inline-status-banner">${t("creatingCareer")}</div>` : ""}
-      <h2 class="section-title">${t("chooseLeague")}</h2>
-      <div class="league-grid">
-        ${leagueKeys.map((leagueKey) => {
-          const [country, name] = leagueKey.split("__");
-          return `
-            <button class="league-card ${ui.selectedLeague === leagueKey ? "active" : ""}" data-league-key="${leagueKey}" ${ui.startingCareer ? "disabled" : ""}>
-              <strong>${country}</strong>
-              <span>${name}</span>
-            </button>
-          `;
-        }).join("")}
+      <div class="field">
+        <label>${t("managerFirst")}</label>
+        <input id="managerName" value="${managerName}" placeholder="${t("managerName")}" ${ui.startingCareer ? "disabled" : ""} />
       </div>
-      <h2 class="section-title" style="margin-top:14px">${t("chooseClub")}</h2>
-      <div class="club-card-grid">
-        ${teams.map((club) => `
-          <button class="club-selection-card ${ui.selectedClubId === club.id ? "active" : ""}" data-club-id="${club.id}" ${ui.startingCareer ? "disabled" : ""}>
-            <div class="cluster">
-              ${badge(club.name, club.logoPrimary, club.logoSecondary)}
+      <div class="setup-slider-stack">
+        <section class="setup-slider-panel">
+          <div class="split">
+            <div>
+              <h2 class="section-title">${t("chooseLeagueSlide")}</h2>
+              <div class="secondary">${t("leagueSlideHint")}</div>
+            </div>
+            <span class="soft-pill">${leagueIndex + 1}/${leagueKeys.length}</span>
+          </div>
+          <div class="setup-slider-shell">
+            <button class="setup-arrow" data-shift-league="-1" ${ui.startingCareer ? "disabled" : ""}>&larr;</button>
+            <div class="setup-spotlight league-spotlight">
+              ${leagueBadge(ui.selectedLeague)}
               <div>
-                <strong>${club.name}</strong>
-                <div class="secondary">${leagueName}</div>
-                <div class="soft-pill">${boardExpectationText(club.boardExpectation)}</div>
+                <strong>${ui.selectedLeague.split("__")[0] || "-"}</strong>
+                <h3>${leagueName || "-"}</h3>
+                <div class="secondary">${ui.state.season}</div>
               </div>
             </div>
-          </button>
-        `).join("")}
-      </div>
-      <div class="field" style="margin-top:16px">
-        <label>${t("managerName")}</label>
-        <input id="managerName" value="Legacy Manager" ${ui.startingCareer ? "disabled" : ""} />
+            <button class="setup-arrow" data-shift-league="1" ${ui.startingCareer ? "disabled" : ""}>&rarr;</button>
+          </div>
+        </section>
+
+        <section class="setup-slider-panel">
+          <div class="split">
+            <div>
+              <h2 class="section-title">${t("chooseClubSlide")}</h2>
+              <div class="secondary">${t("clubSlideHint")}</div>
+            </div>
+            <span class="soft-pill">${teams.length ? clubIndex + 1 : 0}/${teams.length || 0}</span>
+          </div>
+          <div class="setup-slider-shell">
+            <button class="setup-arrow" data-shift-club="-1" ${ui.startingCareer || teams.length < 2 ? "disabled" : ""}>&larr;</button>
+            <button class="setup-spotlight club-spotlight" data-club-id="${selectedClub?.id || ""}" ${ui.startingCareer ? "disabled" : ""}>
+              ${selectedClub ? badge(selectedClub.name, selectedClub.logoPrimary, selectedClub.logoSecondary) : ""}
+              <div>
+                <strong>${selectedClub?.name || "-"}</strong>
+                <div class="secondary">${leagueName || "-"}</div>
+                <div class="setup-spotlight-meta">
+                  <span class="soft-pill">${boardExpectationText(selectedClub?.boardExpectation || "")}</span>
+                  <span class="soft-pill">${ui.language === "ru" ? `Сила ${selectedClub?.strength ?? "-"}` : `Strength ${selectedClub?.strength ?? "-"}`}</span>
+                </div>
+              </div>
+            </button>
+            <button class="setup-arrow" data-shift-club="1" ${ui.startingCareer || teams.length < 2 ? "disabled" : ""}>&rarr;</button>
+          </div>
+        </section>
       </div>
       <div class="action-row">
         <button id="startCareerButton" class="primary-button" ${ui.startingCareer ? "disabled" : ""}>${ui.startingCareer ? t("creatingCareer") : t("startCareer")}</button>
@@ -722,6 +828,7 @@ function dashboardView() {
           <div>
             <p class="eyebrow" style="color:rgba(255,255,255,0.72)">${t("club")}</p>
             <h2>${club.name}</h2>
+            <div class="secondary" style="color:rgba(255,255,255,0.78)">${manager.name}</div>
             <div class="pill-row">
               <span class="pill">${club.country}</span>
               <span class="pill">${club.leagueName}</span>
@@ -763,10 +870,10 @@ function dashboardView() {
       <p class="eyebrow">${t("latestResults")}</p>
       <div class="grid">
         ${leagueOnlySummary.length ? leagueOnlySummary.map((match) => `
-          <div class="split">
-            <span>${match.homeClubName}</span>
-            <strong>${match.homeScore} - ${match.awayScore}</strong>
-            <span>${match.awayClubName}</span>
+          <div class="result-row">
+            <span class="result-home">${match.homeClubName}</span>
+            <strong class="result-score">${match.homeScore} - ${match.awayScore}</strong>
+            <span class="result-away">${match.awayClubName}</span>
           </div>
         `).join("") : `<p class="secondary">${t("noData")}</p>`}
       </div>
@@ -835,7 +942,7 @@ function squadView() {
                             <div class="secondary">${slotCode}</div>
                           </div>
                           ${player
-                            ? `<div><strong>${player.name}</strong><div class="secondary">${player.position} - ${player.overall}</div></div>`
+                            ? `<div><strong>${player.name}</strong><div class="secondary">${playerSummaryLine(player)}</div></div>`
                             : `<div class="drag-placeholder">${ui.language === "ru" ? "Пусто" : "Empty"}</div>`}
                           <div class="action-row">
                             <button type="button" class="mini-button" data-slot-pick="${index}">${ui.language === "ru" ? "Выбрать" : "Pick"}</button>
@@ -855,7 +962,7 @@ function squadView() {
           <div class="drag-pool">
             ${poolPlayers.map((player) => `
               <div class="drag-player">
-                <div><strong>${player.name}</strong><span>${player.position} - ${player.overall}</span></div>
+                <div><strong>${player.name}</strong><span>${playerSummaryLine(player)}</span></div>
                 <div class="action-row">
                   <button type="button" class="mini-button" data-to-lineup="${player.id}">${ui.language === "ru" ? "В состав" : "To lineup"}</button>
                 </div>
@@ -868,61 +975,28 @@ function squadView() {
   `;
 }
 function transfersView() {
+  const windowOpen = !!ui.state.transferWindowOpen;
+  const visibleMarket = windowOpen ? (ui.state.transferMarket || []) : [];
+  const transferOffers = [...(ui.state.transferOffers || [])].sort((left, right) => {
+    const leftIncoming = left.seller_club_id === ui.state.club.id ? 0 : 1;
+    const rightIncoming = right.seller_club_id === ui.state.club.id ? 0 : 1;
+    const leftActive = ["accepted", "negotiating"].includes(left.status) ? 0 : 1;
+    const rightActive = ["accepted", "negotiating"].includes(right.status) ? 0 : 1;
+    return leftIncoming - rightIncoming || leftActive - rightActive || right.id - left.id;
+  });
   return `
-    <section class="card">
-      <p class="eyebrow">${t("transferMarket")}</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>${t("player")}</th><th>${t("clubName")}</th><th>${t("overall")}</th><th>${t("ask")}</th><th>${t("action")}</th></tr></thead>
-          <tbody>
-            ${ui.state.transferMarket.slice(0, 20).map((player) => `
-              <tr>
-                <td>${player.name}<br /><span class="secondary">${player.position} - ${player.nationality}</span></td>
-                <td>${player.sellerClub}</td>
-                <td>${player.overall}</td>
-                <td>${money(player.askingPrice)}</td>
-                <td>
-                  <input class="offer-input" id="offer-${player.id}" type="number" value="${player.askingPrice}" />
-                  <button class="mini-button" data-offer-player="${player.id}">${t("makeOffer")}</button>
-                </td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="card">
-      <p class="eyebrow">${t("outgoingSales")}</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>${t("player")}</th><th>${t("overall")}</th><th>${t("value")}</th><th>${t("action")}</th></tr></thead>
-          <tbody>
-            ${allSquadPlayers().map((player) => `
-              <tr>
-                <td>${player.name}</td>
-                <td>${player.overall}</td>
-                <td>${money(player.value)}</td>
-                <td>
-                  <input class="offer-input" id="sale-${player.id}" type="number" value="${player.value}" />
-                  <button class="mini-button" data-sale-player="${player.id}">${t("listForSale")}</button>
-                </td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
     <section class="card">
       <p class="eyebrow">${t("yourOffers")}</p>
       <div class="grid">
-        ${ui.state.transferOffers.length ? ui.state.transferOffers.map((offer) => `
+        ${transferOffers.length ? transferOffers.map((offer) => `
           <div class="offer-card">
             <div class="split">
               <strong>${offer.playerName}</strong>
               <span class="soft-pill">${statusLabel(offer.status)}</span>
             </div>
+            <div class="secondary">${offer.seller_club_id === ui.state.club.id
+              ? (ui.language === "ru" ? "Входящее предложение по твоему игроку" : "Incoming bid for your player")
+              : (ui.language === "ru" ? "Твои переговоры по покупке" : "Your purchase negotiation")}</div>
             <div class="secondary">${transferOfferMessage(offer)}</div>
             <div class="split">
               <span>${money(offer.proposed_fee || offer.proposedFee)}</span>
@@ -940,6 +1014,52 @@ function transfersView() {
         `).join("") : `<p class="secondary">${t("noData")}</p>`}
       </div>
     </section>
+
+    <section class="card">
+      <p class="eyebrow">${t("transferMarket")}</p>
+      ${!windowOpen ? `<div class="inline-alert">${ui.language === "ru" ? "Трансферное окно закрыто. Рынок открыт только в январе и с июля по сентябрь." : "The transfer window is closed. The market is only open in January and from July to September."}</div>` : ""}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${t("player")}</th><th>${t("clubName")}</th><th>${t("overall")}</th><th>${t("ask")}</th><th>${t("action")}</th></tr></thead>
+          <tbody>
+            ${visibleMarket.length ? visibleMarket.slice(0, 20).map((player) => `
+              <tr>
+                <td>${player.name}<br /><span class="secondary">${player.position} - ${player.nationality}</span></td>
+                <td>${player.sellerClub}</td>
+                <td>${player.overall}</td>
+                <td>${money(player.askingPrice)}</td>
+                <td>
+                  <input class="offer-input" id="offer-${player.id}" type="number" value="${player.askingPrice}" ${!windowOpen ? "disabled" : ""} />
+                  <button class="mini-button" data-offer-player="${player.id}" ${!windowOpen ? "disabled" : ""}>${t("makeOffer")}</button>
+                </td>
+              </tr>
+            `).join("") : `<tr><td colspan="5" class="secondary">${windowOpen ? t("noData") : (ui.language === "ru" ? "Лоты появятся, когда окно снова откроется." : "Listings will appear when the window reopens.")}</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <p class="eyebrow">${t("outgoingSales")}</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${t("player")}</th><th>${t("overall")}</th><th>${t("value")}</th><th>${t("action")}</th></tr></thead>
+          <tbody>
+            ${allSquadPlayers().map((player) => `
+              <tr>
+                <td>${player.name}</td>
+                <td>${player.overall}</td>
+                <td>${money(player.value)}</td>
+                <td>
+                  <input class="offer-input" id="sale-${player.id}" type="number" value="${player.value}" ${!windowOpen ? "disabled" : ""} />
+                  <button class="mini-button" data-sale-player="${player.id}" ${!windowOpen ? "disabled" : ""}>${t("listForSale")}</button>
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
@@ -953,6 +1073,9 @@ function financeView() {
     return names[camp.id] || safeText(camp.name, "Тренировочный сбор");
   };
   const campEffect = (camp) => safeText(camp.effect, ui.language === "ru" ? "Мораль, форма и навыки всей команды растут." : "Morale, fitness and squad attributes improve.");
+  const campNotice = finance.campUsedThisRound
+    ? (ui.language === "ru" ? "Тренировочный сбор на этот тур уже использован." : "The training camp for this round has already been used.")
+    : (ui.language === "ru" ? "Сбор можно отправить только один раз за тур." : "You can only send the squad to camp once per round.");
   return `
     <section class="card">
       <p class="eyebrow">${t("finances")}</p>
@@ -980,6 +1103,7 @@ function financeView() {
 
     <section class="card">
       <p class="eyebrow">${t("trainingCamps")}</p>
+      <div class="inline-alert">${campNotice}</div>
       <div class="grid">
         ${finance.camps.map((camp) => `
           <div class="split">
@@ -987,7 +1111,7 @@ function financeView() {
               <strong>${campName(camp)}</strong>
               <div class="secondary">${campEffect(camp)}</div>
             </div>
-            <button class="mini-button" data-camp-id="${camp.id}">${money(camp.cost)}</button>
+            <button class="mini-button" data-camp-id="${camp.id}" ${finance.campAvailable ? "" : "disabled"}>${money(camp.cost)}</button>
           </div>
         `).join("")}
       </div>
@@ -1201,6 +1325,69 @@ function seasonView() {
   `;
 }
 
+function trophyCards() {
+  const trophies = ui.state.manager?.trophies || [];
+  if (!trophies.length) {
+    return `<p class="secondary">${t("noData")}</p>`;
+  }
+  return trophies.map((trophy) => `
+    <div class="offer-card">
+      <div class="split">
+        <strong>${safeText(trophy.competitionName, "-")}</strong>
+        <span class="soft-pill">${safeText(trophy.season, ui.state.season)}</span>
+      </div>
+      <div class="secondary">${t("round")} ${trophy.roundNo || "-"}</div>
+    </div>
+  `).join("");
+}
+
+function newsView() {
+  const news = ui.state.news || [];
+  return `
+    <section class="card">
+      <p class="eyebrow">${t("trophies")}</p>
+      <div class="grid">
+        ${trophyCards()}
+      </div>
+    </section>
+
+    <section class="card">
+      <p class="eyebrow">${t("latestNews")}</p>
+      <div class="grid">
+        ${news.length ? news.map((item) => `
+          <article class="offer-card">
+            <div class="split">
+              <strong>${safeText(item.title, "-")}</strong>
+              <span class="soft-pill">${t("round")} ${item.roundNo ?? 0}</span>
+            </div>
+            <div class="secondary">${safeText(item.body, "")}</div>
+          </article>
+        `).join("") : `<p class="secondary">${t("noNews")}</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function mailView() {
+  const messages = ui.state.mail || [];
+  return `
+    <section class="card">
+      <p class="eyebrow">${t("managerMail")}</p>
+      <div class="grid">
+        ${messages.length ? messages.map((message) => `
+          <article class="offer-card ${message.isRead ? "" : "mail-unread"}">
+            <div class="split">
+              <strong>${safeText(message.subject, "-")}</strong>
+              <span class="soft-pill">${t("round")} ${message.roundNo ?? 0}</span>
+            </div>
+            <div class="secondary">${safeText(message.body, "")}</div>
+          </article>
+        `).join("") : `<p class="secondary">${t("emptyInbox")}</p>`}
+      </div>
+    </section>
+  `;
+}
+
 function renderTalkOptions(stage, options) {
   return `
     <div class="grid">
@@ -1275,6 +1462,40 @@ function renderMatchEventFeed(liveMatch) {
   `;
 }
 
+function renderDecisionPrompt(liveMatch) {
+  const prompt = liveMatch?.decisionPrompt;
+  if (!prompt) {
+    return "";
+  }
+  return `
+    <section class="card decision-card">
+      <p class="eyebrow">${t("keyMoment")}</p>
+      <div class="split">
+        <h3 class="section-title">${safeText(prompt.title, "-")}</h3>
+        <span class="soft-pill">${liveMatch.minute}'</span>
+      </div>
+      <div class="secondary">${safeText(prompt.description, "")}</div>
+      <div class="field">
+        <label>${t("primaryChoice")}</label>
+        <select id="decisionPrimarySelect">
+          ${(prompt.primaryChoices || []).map((choice) => `<option value="${choice.id}">${ui.language === "ru" ? choice.ru : choice.en}</option>`).join("")}
+        </select>
+      </div>
+      ${prompt.secondaryChoices?.length ? `
+        <div class="field">
+          <label>${t("secondaryChoice")}</label>
+          <select id="decisionSecondarySelect">
+            ${prompt.secondaryChoices.map((choice) => `<option value="${choice.id}">${ui.language === "ru" ? choice.ru : choice.en}</option>`).join("")}
+          </select>
+        </div>
+      ` : ""}
+      <div class="action-row">
+        <button id="resolveDecisionButton" class="primary-button">${t("resolveMoment")}</button>
+      </div>
+    </section>
+  `;
+}
+
 function matchView() {
   const { liveMatch, nextFixture } = ui.state;
   if (!liveMatch) {
@@ -1285,9 +1506,10 @@ function matchView() {
           <h2 class="section-title">${ui.language === "ru" ? "Сыгранные матчи" : "Played matches"}</h2>
           <div class="grid">
             ${ui.postRoundSummary.length ? ui.postRoundSummary.map((match) => `
-              <div class="split">
-                <span>${safeText(match.homeClubName, "-")} - ${safeText(match.awayClubName, "-")}</span>
-                <strong>${match.homeScore}-${match.awayScore}</strong>
+              <div class="result-row">
+                <span class="result-home">${safeText(match.homeClubName, "-")}</span>
+                <strong class="result-score">${match.homeScore} - ${match.awayScore}</strong>
+                <span class="result-away">${safeText(match.awayClubName, "-")}</span>
               </div>
             `).join("") : `<p class="secondary">${t("noData")}</p>`}
           </div>
@@ -1315,11 +1537,11 @@ function matchView() {
               <div class="lineup-columns">
                 <div>
                   <div class="secondary">${t("yourTeam")}</div>
-                  ${(nextFixture.home_club_id === ui.state.club.id ? nextFixture.homeLineup : nextFixture.awayLineup).map((player) => `<div>${player.name} <span class="secondary">${player.position}</span></div>`).join("")}
+                  ${(nextFixture.home_club_id === ui.state.club.id ? nextFixture.homeLineup : nextFixture.awayLineup).map((player) => `<div>${player.name} <span class="secondary">${playerSummaryLine(player)}</span></div>`).join("")}
                 </div>
                 <div>
                   <div class="secondary">${t("opponent")}</div>
-                  ${(nextFixture.home_club_id === ui.state.club.id ? nextFixture.awayLineup : nextFixture.homeLineup).map((player) => `<div>${player.name} <span class="secondary">${player.position}</span></div>`).join("")}
+                  ${(nextFixture.home_club_id === ui.state.club.id ? nextFixture.awayLineup : nextFixture.homeLineup).map((player) => `<div>${player.name} <span class="secondary">${playerSummaryLine(player)}</span></div>`).join("")}
                 </div>
               </div>
             </div>
@@ -1356,11 +1578,11 @@ function matchView() {
             <div class="lineup-columns">
               <div>
                 <div class="secondary">${t("yourTeam")}</div>
-                ${yourTeam.starters.map((player) => `<div>${player.name} <span class="secondary">${player.position}</span></div>`).join("")}
+                ${yourTeam.starters.map((player) => `<div>${player.name} <span class="secondary">${playerSummaryLine(player)}</span></div>`).join("")}
               </div>
               <div>
                 <div class="secondary">${t("opponent")}</div>
-                ${opponent.starters.map((player) => `<div>${player.name} <span class="secondary">${player.position}</span></div>`).join("")}
+                ${opponent.starters.map((player) => `<div>${player.name} <span class="secondary">${playerSummaryLine(player)}</span></div>`).join("")}
               </div>
             </div>
           </div>
@@ -1435,8 +1657,8 @@ function matchView() {
       <div class="grid two">
         <div class="card compact-card">
           <div class="split"><span>${t("yourTeam")}</span><strong>${yourTeam.formation} / ${labelFor("mentality", yourTeam.mentality)} / ${labelFor("style", yourTeam.style)}</strong></div>
-          <div class="split"><span>${t("opponent")}</span><strong>${opponent.formation} / ${labelFor("mentality", opponent.mentality)} / ${labelFor("style", opponent.style)}</strong></div>
-        </div>
+        <div class="split"><span>${t("opponent")}</span><strong>${opponent.formation} / ${labelFor("mentality", opponent.mentality)} / ${labelFor("style", opponent.style)}</strong></div>
+      </div>
         <div class="card compact-card">
           <div class="split"><span>${t("date")}</span><strong>${formatDate(liveMatch.matchContext.matchDate)}</strong></div>
           <div class="split"><span>${t("competition")}</span><strong>${competitionLabel(liveMatch.matchContext)}</strong></div>
@@ -1444,6 +1666,7 @@ function matchView() {
           <div class="split"><span>${t("referee")}</span><strong>${liveMatch.matchContext.referee}</strong></div>
         </div>
       </div>
+      ${renderDecisionPrompt(liveMatch)}
       <div class="commentary">
         ${liveMatch.commentary.slice().reverse().map((line) => `<div class="commentary-line"><strong>${line.minute}'</strong> ${line.text}</div>`).join("")}
       </div>
@@ -1555,6 +1778,34 @@ function attachCommonEvents() {
     });
   });
 
+  document.querySelectorAll("[data-shift-league]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const groups = leagueGroups(ui.state.clubs);
+      const leagueKeys = Object.keys(groups).sort((left, right) => left.localeCompare(right));
+      const nextIndex = cycleIndex(leagueKeys.length, Math.max(0, leagueKeys.indexOf(ui.selectedLeague)), Number(button.dataset.shiftLeague || 0));
+      ui.selectedLeague = leagueKeys[nextIndex];
+      const clubs = [...(groups[ui.selectedLeague] || [])].sort((left, right) => right.strength - left.strength || left.name.localeCompare(right.name));
+      ui.selectedClubId = clubs[0]?.id || null;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-shift-club]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const groups = leagueGroups(ui.state.clubs);
+      const clubs = [...(groups[ui.selectedLeague] || [])].sort((left, right) => right.strength - left.strength || left.name.localeCompare(right.name));
+      const currentIndex = Math.max(0, clubs.findIndex((club) => club.id === ui.selectedClubId));
+      const nextIndex = cycleIndex(clubs.length, currentIndex, Number(button.dataset.shiftClub || 0));
+      ui.selectedClubId = clubs[nextIndex]?.id || null;
+      render();
+    });
+  });
+
+  document.getElementById("managerName")?.addEventListener("input", (event) => {
+    ui.managerNameDraft = event.target.value;
+    localStorage.setItem("lfm-manager-name", ui.managerNameDraft);
+  });
+
   document.querySelectorAll("[data-load-slot]").forEach((button) => {
     button.addEventListener("click", () => doLoad(Number(button.dataset.loadSlot)));
   });
@@ -1563,7 +1814,9 @@ function attachCommonEvents() {
     if (ui.startingCareer) {
       return;
     }
-    const managerName = document.getElementById("managerName").value || "Legacy Manager";
+    const managerName = document.getElementById("managerName").value || ui.managerNameDraft || "Legacy Manager";
+    ui.managerNameDraft = managerName;
+    localStorage.setItem("lfm-manager-name", managerName);
     ui.startingCareer = true;
     render();
     try {
@@ -1914,7 +2167,7 @@ function attachTabEvents() {
     });
   }
   if (ui.tab === "match") {
-    ["liveFormationSelect", "liveMentalitySelect", "liveStyleSelect", "subOutSelect", "subInSelect"].forEach((id) => {
+    ["liveFormationSelect", "liveMentalitySelect", "liveStyleSelect", "subOutSelect", "subInSelect", "decisionPrimarySelect", "decisionSecondarySelect"].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) {
         return;
@@ -2066,23 +2319,40 @@ function attachTabEvents() {
         showToast(error.message);
       }
     });
+
+    document.getElementById("resolveDecisionButton")?.addEventListener("click", async () => {
+      stopLiveTicker();
+      try {
+        const payload = await api("/api/match/action", {
+          method: "POST",
+          body: JSON.stringify({
+            type: "decision",
+            choice: document.getElementById("decisionPrimarySelect")?.value || null,
+            secondaryChoice: document.getElementById("decisionSecondarySelect")?.value || null,
+          }),
+        });
+        ui.state = payload.state;
+        render();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
   }
 }
 
 function renderTabs() {
-  const tabKeys = {
-    dashboard: "club",
-    squad: "squad",
-    transfers: "market",
-    finance: "finance",
-    season: "season",
-    match: "match",
-  };
+  const tabs = [
+    { id: "dashboard", label: "club" },
+    { id: "squad", label: "squad" },
+    { id: "transfers", label: "market" },
+    { id: "finance", label: "finance" },
+    { id: "season", label: "season" },
+    { id: "news", label: "news" },
+    { id: "mail", label: "mail" },
+    { id: "match", label: "match" },
+  ];
   bottomNav.classList.remove("hidden");
-  bottomNav.querySelectorAll("button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.tab === ui.tab);
-    button.textContent = t(tabKeys[button.dataset.tab] || button.dataset.tab);
-  });
+  bottomNav.innerHTML = tabs.map((tab) => `<button data-tab="${tab.id}" class="${tab.id === ui.tab ? "active" : ""}">${t(tab.label)}</button>`).join("");
 }
 
 function syncLiveTickerState() {
@@ -2100,6 +2370,8 @@ function renderGame() {
     transfers: transfersView,
     finance: financeView,
     season: seasonView,
+    news: newsView,
+    mail: mailView,
     match: matchView,
   };
   app.innerHTML = `${toolbarView()}${views[ui.tab]()}`;

@@ -81,6 +81,7 @@ function buildSeedDatabase() {
 }
 
 function main() {
+  run(process.execPath, [path.join(rootDir, "scripts", "patch_capacitor_nodejs.js")]);
   prepareStandaloneFiles();
   installStandaloneDependencies();
   prepareStandaloneFiles();
